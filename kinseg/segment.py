@@ -19,6 +19,11 @@ segments exist, so it merges the kinematic phases rather than placing cuts of
 its own; the windowing, prompts and stitching are unchanged. Each window's
 audit keeps every scored candidate with its log-probability.
 
+With ``--probe``, decoding stays free (replies identical to TempSeg's) and, at
+each ``s``/``e``, the log-probability of every value on TempSeg's 0.5 s grid
+in the window is saved under ``probes``: where the model believes that start
+or end could lie. ``beliefs.py`` turns these into scores for kinematic cuts.
+
 Usage (one GPU)::
 
     CUDA_VISIBLE_DEVICES=7 python kinseg/segment.py --jobs jobs.jsonl --output-dir out/
@@ -74,6 +79,40 @@ def candidates(ticks: list[int], key: str, row_starts: list[int], valid_end: int
     return values or [valid_end]
 
 
+def grid_ticks(window, step: int = 10) -> list[int]:
+    """TempSeg's output grid in a window (multiples of ``step`` ticks, 0.5 s) plus the window edges."""
+    lo, hi = window.valid_start_tick, window.valid_end_tick
+    first = -(-lo // step) * step
+    return sorted(set(range(first, hi + 1, step)) | {lo, hi, window.core_start_tick, window.core_end_tick})
+
+
+def probe_decoding(pipeline) -> list[dict]:
+    """Decode freely with kinseg.decoding, recording grid log-probabilities at each s/e; returns the audit."""
+    import decoding
+
+    audit: list[dict] = []
+    current: dict = {}
+    temporal_inputs = pipeline.temporal_inputs
+
+    def inputs_with_window(frames, window, *args, **kwargs):
+        current["window"] = window
+        return temporal_inputs(frames, window, *args, **kwargs)
+
+    def probed_generate(model, proc, inputs, budget):
+        window = current["window"]
+        grid = grid_ticks(window)
+        entry = dict(scope_id=window.scope_id, view_start_us=window.requested_view_start_us,
+                     envelope=[window.valid_start_tick, window.valid_end_tick,
+                               window.core_start_tick, window.core_end_tick], beliefs=[])
+        audit.append(entry)
+        entry["output"] = decoding.generate(model, proc.tokenizer, inputs, budget,
+                                            probe=lambda key: grid, record=entry["beliefs"])
+        return entry["output"]
+
+    pipeline.temporal_inputs, pipeline.generate = inputs_with_window, probed_generate
+    return audit
+
+
 def constrain_decoding(pipeline, job: dict) -> list[dict]:
     """Decode each window with kinseg.decoding, choosing s/e among ``job["cuts"]``; returns the audit list."""
     import decoding
@@ -126,7 +165,10 @@ def main(argv=None) -> int:
     ap.add_argument("--left-wrist")
     ap.add_argument("--right-wrist")
     ap.add_argument("--instruction", default="")
-    ap.add_argument("--kinematic", help="autolabel exp_wgo_bench run: constrain cuts to its phase boundaries")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--kinematic", help="autolabel exp_wgo_bench run: constrain cuts to its phase boundaries")
+    mode.add_argument("--probe", action="store_true",
+                      help="decode freely and record grid log-probabilities at each s/e (as 'probes')")
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args(argv)
@@ -146,7 +188,8 @@ def main(argv=None) -> int:
     quiet = lambda *a, **k: None  # noqa: E731
     cuts = kinematic_cuts(Path(args.kinematic)) if args.kinematic else None
     current: dict = {}
-    audit = constrain_decoding(pipeline, current) if cuts is not None else None
+    audit = constrain_decoding(pipeline, current) if cuts is not None else (
+        probe_decoding(pipeline) if args.probe else None)
     for job in _jobs(args):
         out = out_dir / f"{job['id']}.json"
         if out.exists() and not args.overwrite:
@@ -156,6 +199,7 @@ def main(argv=None) -> int:
             if job["id"] not in cuts:
                 raise SystemExit(f"{job['id']} has no kinematic phases in {args.kinematic}")
             current["cuts"] = cuts[job["id"]]
+        if audit is not None:
             audit.clear()
         profile = PROFILES[job.get("profile", args.profile)]
         videos, canonical = engine._inputs(job["video"], profile, job.get("left_wrist"), job.get("right_wrist"),
@@ -175,6 +219,8 @@ def main(argv=None) -> int:
                       segments=segments, windows=windows, elapsed_s=round(time.monotonic() - started, 2))
         if cuts is not None:
             record.update(kinematic_run=str(args.kinematic), kinematic_cuts=current["cuts"], constraints=list(audit))
+        elif args.probe:
+            record.update(probes=list(audit))
         out.write_text(json.dumps(record, indent=1, default=str) + "\n")
         print(f"{job['id']}: {len(segments)} segments, {len(windows)} windows, {record['elapsed_s']} s", flush=True)
     return 0

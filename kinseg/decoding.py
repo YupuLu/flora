@@ -14,7 +14,10 @@ Every scored candidate list is returned, so the probabilities can also be
 read as evidence for or against a cut at each candidate.
 
 With ``allowed=None`` the loop is plain greedy decoding and reproduces
-``model.generate`` token for token, which is how it is checked.
+``model.generate`` token for token, which is how it is checked. ``probe``
+keeps decoding free and only records, at each number, the log-probability of
+a given list of values (TempSeg's 0.5 s grid), i.e. where the model believes
+that start or end could lie.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import torch
 
 NUMBER_START = re.compile(r'"([se])":$')
 ROW_START = re.compile(r'"s":(\d+)')
+WRITTEN = re.compile(r'"[se]":(\d+)')
 
 
 def _digit_ids(tokenizer) -> List[int]:
@@ -59,8 +63,14 @@ def score_values(model, cache, logits: torch.Tensor, values: Sequence[int], digi
 
 def generate(model, tokenizer, inputs: Dict[str, torch.Tensor], budget: int,
              allowed: Optional[Callable[[str, List[int]], List[int]]] = None,
-             record: Optional[list] = None) -> str:
-    """Greedy decoding; ``allowed(key, row_starts)`` gives the candidate values for ``key`` in ``"se"``."""
+             record: Optional[list] = None,
+             probe: Optional[Callable[[str], List[int]]] = None) -> str:
+    """Greedy decoding; ``allowed(key, row_starts)`` gives the candidate values for ``key`` in ``"se"``.
+
+    With ``probe(key)`` instead, decoding stays free (the reply is unchanged) and, at each
+    number, the log-probability of every value in ``probe(key)`` is recorded together with
+    the value the model then writes.
+    """
     device = next(model.parameters()).device
     inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in inputs.items() if k != "video_metadata"}
     eos = tokenizer.eos_token_id
@@ -78,9 +88,16 @@ def generate(model, tokenizer, inputs: Dict[str, torch.Tensor], budget: int,
             res = model(input_ids=torch.tensor([token_ids], device=device), past_key_values=cache, use_cache=True)
         return res.logits[0, -1]
 
+    probed: List[dict] = []
     while len(generated) < budget:
         text = tokenizer.decode(generated, skip_special_tokens=True)
-        match = NUMBER_START.search(text) if allowed is not None else None
+        match = NUMBER_START.search(text) if (allowed is not None or probe is not None) else None
+        if match and allowed is None:
+            values = probe(match.group(1))
+            scores = score_values(model, cache, logits, values, digit_ids)
+            probed.append(dict(key=match.group(1), at=len(generated), values=list(values),
+                               log_probs=[round(s, 4) for s in scores]))
+            match = None
         if match:
             starts = [int(s) for s in ROW_START.findall(text)]
             values = allowed(match.group(1), starts)
@@ -103,4 +120,11 @@ def generate(model, tokenizer, inputs: Dict[str, torch.Tensor], budget: int,
         if token in eos:
             break
         logits = step([token])
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    text = tokenizer.decode(generated, skip_special_tokens=True).strip()
+    if probed:
+        written = [int(v) for v in WRITTEN.findall(text)]
+        for entry, value in zip(probed, written):
+            entry["written"] = value
+        if record is not None:
+            record.extend(probed)
+    return text

@@ -44,6 +44,28 @@ def test_allowed_ticks():
     assert allowed_ticks(window, [9.0, 12.0, 13.37, 30.0]) == [0, 40, 67, 280, 320]
 
 
+def test_beliefs_labels_and_merge():
+    from beliefs import auc, boundary_beliefs, cut_belief, labels, merge_phases
+
+    record = {"probes": [{"view_start_us": 10_000_000, "envelope": [0, 320, 40, 280],
+                          "beliefs": [{"key": "e", "values": [0, 60, 70, 320], "log_probs": [0.0, 0.0, -10.0, 0.0]}]}]}
+    beliefs = boundary_beliefs(record)          # edges 0 and 320 dropped; 60 -> 13.0 s, 70 -> 13.5 s
+    assert [round(t, 2) for t, _ in beliefs] == [13.0, 13.5]
+    assert cut_belief(13.1, beliefs) > 0.3 and cut_belief(14.0, beliefs) == 0.0
+    assert labels([1.0, 2.0, 2.3, 5.0], [(0, 2.2), (2.2, 6)]) == [0, 0, 1, 0]
+    assert auc([0.9, 0.1, 0.2], [1, 0, 0]) == 1.0
+    assert merge_phases([(0, 1), (1, 2), (2, 3)], [2]) == [(0, 2), (2, 3)]
+
+
+def test_grid_ticks():
+    from segment import grid_ticks
+
+    interior = SimpleNamespace(valid_start_tick=0, valid_end_tick=320, core_start_tick=40, core_end_tick=280)
+    assert grid_ticks(interior) == list(range(0, 321, 10))
+    last = SimpleNamespace(valid_start_tick=0, valid_end_tick=197, core_start_tick=40, core_end_tick=197)
+    assert grid_ticks(last)[-3:] == [180, 190, 197]
+
+
 def test_candidates_keep_rows_valid():
     from segment import candidates
 
