@@ -104,3 +104,22 @@ value was a window edge (0, 40, 280 or 320, all on the grid) in 63 % of the
 choices, whatever the video showed. Whole-value constrained decoding is
 therefore not a way to read TempSeg's judgement at our cuts; its beliefs have
 to be read on its own 0.5 s grid.
+
+### TempSeg's grid beliefs as a judge of our cuts (`--probe`, `beliefs.py`)
+
+Decoding stays free (segments identical to TempSeg's) while the probability of
+every grid value is recorded at each start and end. A kinematic cut scores the
+largest probability any prediction puts on its nearest grid point. Ends are
+confident (typically above 90 % on one grid point), so the beliefs say little
+away from TempSeg's own cuts.
+
+| | Galaxea | DROID |
+|---|---:|---:|
+| AUC of the belief, cuts nearest a reference boundary against the rest | 0.735 | 0.726 |
+| AUC of the distance to TempSeg's nearest cut | 0.796 | 0.694 |
+| Best F1@0.75 merging our phases across cuts below a belief threshold | 0.416 | 0.356 |
+| Ceiling: a perfect judge keeping exactly the cuts nearest reference boundaries | 0.728 | 0.729 |
+
+A same-or-different judge on our cuts is worth having (the ceiling beats
+TempSeg alone, by 0.17 on DROID), but TempSeg's probabilities are not that
+judge: they add nothing to the position of its own cuts.
