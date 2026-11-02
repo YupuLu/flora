@@ -44,35 +44,24 @@ def test_allowed_ticks():
     assert allowed_ticks(window, [9.0, 12.0, 13.37, 30.0]) == [0, 40, 67, 280, 320]
 
 
+def test_candidates_keep_rows_valid():
+    from segment import candidates
+
+    ticks = [0, 40, 67, 120, 280, 320]
+    assert candidates(ticks, "s", [], 320) == [0, 40, 67, 120, 280]       # a start before the window end
+    assert candidates(ticks, "s", [40], 320) == [40, 67, 120, 280]        # not before the previous row
+    assert candidates(ticks, "e", [40, 67], 320) == [120, 280, 320]       # after this row's start
+    assert candidates(ticks, "e", [320], 320) == [320]                    # never empty
+
+
 @pytest.mark.skipif(not (TOKENIZER / "tokenizer.json").exists(), reason="TempSeg tokenizer not downloaded")
-def test_constraint_forces_allowed_numbers():
-    import torch
+def test_number_detection():
     from transformers import AutoTokenizer
-    from segment import TickConstraint
+    from decoding import NUMBER_START, ROW_START, _digit_ids
 
     tok = AutoTokenizer.from_pretrained(str(TOKENIZER))
-    prompt = tok("prompt", add_special_tokens=False)["input_ids"]
-    vocab = len(tok)
-
-    def greedy(prefer: str, allowed):
-        """Decode with logits that always prefer the characters of ``prefer`` in order."""
-        ids = list(prompt)
-        target = tok(prefer, add_special_tokens=False)["input_ids"]
-        constraint = TickConstraint(tok, len(prompt), allowed)
-        for step in range(len(target) + 4):
-            scores = torch.zeros(1, vocab)
-            want = target[step] if step < len(target) else tok.convert_tokens_to_ids(",")
-            scores[0, want] = 10.0
-            for d in range(10):  # mild preference order among digits
-                scores[0, tok.convert_tokens_to_ids(str(d))] += 0.1 * (9 - d)
-            ids.append(int(constraint(torch.tensor([ids]), scores).argmax()))
-            text = tok.decode(ids[len(prompt):])
-            if text.endswith(","):
-                return text
-        return tok.decode(ids[len(prompt):])
-
-    # The model wants 160; only 137 and 158 are allowed.
-    out = greedy('{"s":160', [137, 158])
-    assert out.startswith('{"s":1') and out.rstrip(",")[-3:] in {"137", "158"}
-    # An allowed value passes through unchanged.
-    assert greedy('{"s":40', [40, 158]).startswith('{"s":40,')
+    assert len(_digit_ids(tok)) == 10
+    text = '{"segments":[{"s":40,"e":160,"lo":false,"ro":false},{"s":'
+    assert NUMBER_START.search(text).group(1) == "s"
+    assert [int(s) for s in ROW_START.findall(text)] == [40]
+    assert NUMBER_START.search('{"segments":') is None and NUMBER_START.search('"lo":') is None

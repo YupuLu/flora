@@ -13,9 +13,11 @@ subtasks; its cuts lie on a 0.5 s grid in practice.
 
 | File | Purpose |
 |---|---|
-| `segment.py` | TempSeg segmentation only (no Captioner), model loaded once, raw window replies kept; `--kinematic <run>` constrains each `s`/`e` to the episode's kinematic boundary ticks |
+| `segment.py` | TempSeg segmentation only (no Captioner), model loaded once, raw window replies kept; `--kinematic <run>` chooses each `s`/`e` among the episode's kinematic boundary ticks |
+| `decoding.py` | Greedy decoding with whole-value choice of `s`/`e` and their log-probabilities |
+| `check_decoding.py` | GPU check that `decoding.py` without candidates reproduces TempSeg's `generate` |
 | `merge.py` | Post-hoc combination rules and their scores |
-| `test_kinseg.py` | CPU checks of the rules and the decoding constraint |
+| `test_kinseg.py` | CPU checks of the rules and the candidate lists |
 
 ## Setup
 
@@ -68,15 +70,24 @@ about 0.07–0.10 on Galaxea and nothing on DROID, where TempSeg's errors are
 structural: it under-segments (124 predictions for 150 references, merge
 recall 0.52), often returning one segment for a pick-and-place.
 
-### Constrained decoding (`--kinematic`): not usable yet
+### Constrained decoding (`--kinematic`)
 
-Masking digits one at a time ignores the magnitude of the number. On
-`galaxea_002` window 2 the model began a start tick with `3`; every
-continuation it preferred was blocked, so the only allowed completion was
-`320`, giving the invalid row `{"s":320,"e":161}`, which FLORA rejects and its
-bounded retry cannot repair. A usable version must choose a whole allowed
-value: either stop when a number ends off the cut list, replace it with the
-nearest cut and continue (one extra prefill per correction; equivalent to
-in-generation snapping), or score every allowed value by its likelihood and
-take the best (about ten times slower). Failed episodes are written as
-`<id>.error.json` with each window's envelope, allowed ticks and reply.
+TempSeg writes each tick digit by digit. A first version masked digits one at a
+time and broke: on `galaxea_002` window 2 the model began a start with `3`,
+every continuation it preferred was blocked, and the only allowed completion
+was `320`, giving the invalid row `{"s":320,"e":161}`.
+
+`decoding.py` instead chooses whole values. It decodes greedily itself (checked
+by `check_decoding.py`: identical to TempSeg's `generate` on all five windows
+of `galaxea_002`), and at each `"s":`/`"e":` scores every allowed value in one
+batched forward pass from a copy of the cache,
+
+    log P(v) = sum of log P(digit) over the digits of v + log P(a non-digit follows v),
+
+writes the best and resumes. Allowed values are the window-local ticks of the
+episode's phase boundaries plus the window edges; a start may not precede the
+previous row's start and an end must follow its row's start. Every scored list
+is kept in the output (`constraints[*].choices`), so the probabilities are also
+per-boundary evidence for or against a cut. Episodes that still fail are
+written as `<id>.error.json` with each window's envelope, allowed ticks and
+reply.

@@ -12,11 +12,12 @@ first source frame; ``windows`` keeps each window's raw JSON reply in 20 Hz
 local ticks, so other merge rules can reuse them.
 
 With ``--kinematic <run>`` (an autolabel ``exp_wgo_bench`` run), decoding is
-constrained: every ``s`` and ``e`` the model writes must be the local tick of
-one of the episode's kinematic phase boundaries, or a window edge (valid or
-core). The model still decides which segments exist, so it merges the
-kinematic phases rather than placing cuts of its own; the windowing, prompts
-and stitching are unchanged.
+constrained: every ``s`` and ``e`` the model writes is chosen whole, as the
+most probable of the local ticks of the episode's kinematic phase boundaries
+and the window edges (``kinseg/decoding.py``). The model still decides which
+segments exist, so it merges the kinematic phases rather than placing cuts of
+its own; the windowing, prompts and stitching are unchanged. Each window's
+audit keeps every scored candidate with its log-probability.
 
 Usage (one GPU)::
 
@@ -31,13 +32,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from pathlib import Path
 
 TEMPSEG = Path(__file__).resolve().parents[1] / "tempseg"
 sys.path.insert(0, str(TEMPSEG))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from batch_utils.api import DataEnginePipeline  # noqa: E402
 from batch_utils.config import PROFILE_POOLS  # noqa: E402
@@ -63,38 +64,23 @@ def allowed_ticks(window, cuts: list[float]) -> list[int]:
     return sorted({k for k in ticks if lo <= k <= hi} | edges)
 
 
-class TickConstraint:
-    """Logits processor: a number after ``"s":`` or ``"e":`` must be one of ``allowed``."""
-
-    def __init__(self, tokenizer, prompt_len: int, allowed: list[int]):
-        self.tok, self.n = tokenizer, prompt_len
-        self.allowed = {str(k) for k in allowed}
-        self.digits = {str(d): tokenizer.convert_tokens_to_ids(str(d)) for d in range(10)}
-
-    def __call__(self, input_ids, scores):
-        text = self.tok.decode(input_ids[0, self.n:], skip_special_tokens=True)
-        match = re.search(r'"[se]":(\d*)$', text)
-        if match is None:
-            return scores
-        prefix = match.group(1)
-        following = {a[len(prefix)] for a in self.allowed if a.startswith(prefix) and len(a) > len(prefix)}
-        if prefix in self.allowed:  # the number may end here; only digits that lead to another value
-            blocked = [i for d, i in self.digits.items() if d not in following]
-            scores[:, blocked] = float("-inf")
-            return scores
-        keep = [self.digits[d] for d in following]
-        constrained = scores.new_full(scores.shape, float("-inf"))
-        constrained[:, keep] = scores[:, keep]
-        return constrained
+def candidates(ticks: list[int], key: str, row_starts: list[int], valid_end: int) -> list[int]:
+    """Allowed values for the next number: a start not before the previous row's, an end after its start."""
+    if key == "s":
+        floor = row_starts[-1] if row_starts else ticks[0]
+        values = [k for k in ticks if floor <= k < valid_end]
+    else:
+        values = [k for k in ticks if k > row_starts[-1]]
+    return values or [valid_end]
 
 
 def constrain_decoding(pipeline, job: dict) -> list[dict]:
-    """Make each window's generation obey TickConstraint for ``job["cuts"]``; returns the audit list."""
-    from transformers import LogitsProcessorList
+    """Decode each window with kinseg.decoding, choosing s/e among ``job["cuts"]``; returns the audit list."""
+    import decoding
 
     audit: list[dict] = []
     current: dict = {}
-    temporal_inputs, generate = pipeline.temporal_inputs, pipeline.generate
+    temporal_inputs = pipeline.temporal_inputs
 
     def inputs_with_window(frames, window, *args, **kwargs):
         current["window"] = window
@@ -105,16 +91,13 @@ def constrain_decoding(pipeline, job: dict) -> list[dict]:
         ticks = allowed_ticks(window, job["cuts"])
         entry = dict(scope_id=window.scope_id, envelope=[window.valid_start_tick, window.valid_end_tick,
                                                          window.core_start_tick, window.core_end_tick],
-                     allowed_ticks=ticks)
+                     allowed_ticks=ticks, choices=[])
         audit.append(entry)
-        processor = TickConstraint(proc.tokenizer, inputs["input_ids"].shape[1], ticks)
-        inner = model.generate
-        model.generate = lambda *a, **k: inner(*a, logits_processor=LogitsProcessorList([processor]), **k)
-        try:
-            entry["output"] = generate(model, proc, inputs, budget)
-            return entry["output"]
-        finally:
-            model.generate = inner
+        entry["output"] = decoding.generate(
+            model, proc.tokenizer, inputs, budget,
+            allowed=lambda key, starts: candidates(ticks, key, starts, window.valid_end_tick),
+            record=entry["choices"])
+        return entry["output"]
 
     pipeline.temporal_inputs, pipeline.generate = inputs_with_window, constrained_generate
     return audit
