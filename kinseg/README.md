@@ -62,6 +62,7 @@ so the robot profile runs on the main view only.
 | `snap@1` | 0.556 | 0.577 |
 | `split-first`: segments holding a close and a later open split at the first cut after the close | 0.690 | 0.581 |
 | `split-mid`: the same, at the cut nearest the middle | 0.690 | 0.524 |
+| constrained TempSeg (`--kinematic`, whole values; see below) | 0.498 | 0.317 |
 
 Bounds from the references (not a method): moving each TempSeg endpoint to the
 reference cut itself within 1 s gives 0.788 / 0.555; to the best kinematic
@@ -91,3 +92,15 @@ is kept in the output (`constraints[*].choices`), so the probabilities are also
 per-boundary evidence for or against a cut. Episodes that still fail are
 written as `<id>.error.json` with each window's envelope, allowed ticks and
 reply.
+
+Result (all 75 episodes ran): constrained TempSeg is much worse, F1@0.75 0.498
+on Galaxea and 0.317 on DROID (free: 0.687 / 0.562), with fewer segments
+(110 / 96 against 136 / 124) and larger boundary offsets (median 0.53 s /
+1.89 s against 0.27 s / 0.99 s); `split-first` on top reaches 0.514 / 0.487.
+The cause is the model's output grid: 88 % of the ticks it writes freely are
+multiples of 10, i.e. on a 0.5 s grid. Token probabilities of off-grid values
+are low and say nothing about numeric distance, so the most probable allowed
+value was a window edge (0, 40, 280 or 320, all on the grid) in 63 % of the
+choices, whatever the video showed. Whole-value constrained decoding is
+therefore not a way to read TempSeg's judgement at our cuts; its beliefs have
+to be read on its own 0.5 s grid.
