@@ -43,7 +43,7 @@ python modules/exp_wgo_bench/run.py --label kinseg-base
 CUDA_VISIBLE_DEVICES=7 python kinseg/segment.py --jobs wgo_jobs.jsonl --output-dir out/tempseg
 CUDA_VISIBLE_DEVICES=7 python kinseg/segment.py --jobs wgo_jobs.jsonl --kinematic <run> --output-dir out/constrained
 # scores of every rule
-python kinseg/merge.py --kinematic <run> --flora out/tempseg --out out/merge
+python kinseg/merge.py --autolabel <autolabel checkout> --kinematic <run> --flora out/tempseg --out out/merge
 ```
 
 A job row is `{"id", "video", "profile": "yam"}`; WGO videos are single-view,

@@ -19,9 +19,11 @@ other:
   between the two: the first cut after the close, or the cut nearest the
   middle between close and open. Repeated while a part still holds such a pair.
 
-Scores use autolabel's WGO-Bench scorer (``modules/exp_wgo_bench/score.py``)::
+Scores use autolabel's WGO-Bench scorer (``modules/exp_wgo_bench/score.py``)
+from the checkout given by ``--autolabel`` or ``$AUTOLABEL_ROOT``::
 
-    python kinseg/merge.py --kinematic <exp_wgo_bench run> --flora <segment.py output dir> --out <dir>
+    python kinseg/merge.py --autolabel <autolabel checkout> --kinematic <exp_wgo_bench run> \\
+        --flora <segment.py output dir> --out <dir>
 """
 
 from __future__ import annotations
@@ -33,11 +35,6 @@ import sys
 from bisect import bisect_left
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
-
-AUTOLABEL = Path(os.environ.get("AUTOLABEL_ROOT", "/media/data6/yplu/Github/manip/prep/autolabel"))
-sys.path.insert(0, str(AUTOLABEL))
-
-from modules.exp_wgo_bench.score import score_family  # noqa: E402
 
 Interval = Tuple[float, float]
 SNAP_TOLERANCES_S = (0.5, 1.0)
@@ -124,7 +121,14 @@ def _as_items(intervals: Sequence[Interval]) -> List[Dict[str, float]]:
     return [{"start_sec": s, "end_sec": e} for s, e in intervals]
 
 
-def evaluate(kinematic_run: Path, flora_dir: Path) -> Dict[str, Dict[str, object]]:
+def scorer(autolabel: Path):
+    """``score_family`` from an autolabel checkout."""
+    sys.path.insert(0, str(autolabel))
+    from modules.exp_wgo_bench.score import score_family
+    return score_family
+
+
+def evaluate(kinematic_run: Path, flora_dir: Path, score_family) -> Dict[str, Dict[str, object]]:
     """Scores per family and rule, plus the combined intervals per episode."""
     cases: Dict[str, Dict[str, list]] = {}
     combined: Dict[str, Dict[str, object]] = {}
@@ -163,11 +167,15 @@ def report(scores: Dict[str, Dict[str, object]]) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"),
+                    help="autolabel checkout (default: $AUTOLABEL_ROOT)")
     ap.add_argument("--kinematic", required=True, help="autolabel exp_wgo_bench run directory")
     ap.add_argument("--flora", required=True, help="kinseg/segment.py output directory")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
-    result = evaluate(Path(args.kinematic), Path(args.flora))
+    if not args.autolabel:
+        ap.error("give --autolabel or set AUTOLABEL_ROOT")
+    result = evaluate(Path(args.kinematic), Path(args.flora), scorer(Path(args.autolabel)))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "merge.json").write_text(json.dumps(result, indent=1) + "\n")
