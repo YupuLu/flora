@@ -70,7 +70,8 @@ def test_caption_join():
         (0, 2.1, [0, 1, 2], True), (2.1, 4, [3], False)]
     case = {"predictions": [{"start_sec": 0, "end_sec": 1}, {"start_sec": 1, "end_sec": 3}]}
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, None)] == [(0, 1), (1, 3)]
-    tempseg = {"segments": [{"start_s": 0.0, "end_s": 2.0}, {"start_s": 2.0, "end_s": 3.0}]}
+    tempseg = {"segments": [{"start_s": 0.0, "end_s": 2.0}, {"start_s": 2.0, "end_s": 2.9999999}]}
+    # The near-duplicate end (2.9999999 against 3) gives no zero-length interval.
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
 
 

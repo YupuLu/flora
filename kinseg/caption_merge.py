@@ -57,8 +57,16 @@ def join_equal(intervals: List[Dict[str, object]]) -> List[Dict[str, object]]:
     return out
 
 
+MIN_TILE_S = 0.05
+
+
 def tiles(cuts: List[float], start: float, end: float) -> List[Dict[str, object]]:
-    edges = [start] + [c for c in sorted(set(cuts)) if start < c < end] + [end]
+    """Intervals between the cuts; cuts closer than MIN_TILE_S to the previous edge or to the end are dropped."""
+    edges = [start]
+    for c in sorted(set(cuts)):
+        if c - edges[-1] >= MIN_TILE_S and end - c >= MIN_TILE_S:
+            edges.append(c)
+    edges.append(end)
     return [dict(start_s=a, end_s=b, members=[k]) for k, (a, b) in enumerate(zip(edges[:-1], edges[1:]))]
 
 
