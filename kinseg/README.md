@@ -53,6 +53,27 @@ python kinseg/merge.py --autolabel <autolabel checkout> --kinematic <run> --flor
 A job row is `{"id", "video", "profile": "yam"}`; WGO videos are single-view,
 so the robot profile runs on the main view only.
 
+### Flora-Captioner on our phases (`caption_merge.py`), all 75 episodes
+
+Every kinematic phase was captioned once by Flora-Captioner (27B, on the
+remote server), with its neighbours as context, with and without the episode
+instruction; phases were then joined offline.
+
+| F1@0.75 | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg alone | 0.687 | 0.562 |
+| join phases with identical (normalised) captions | 0.029 | 0.000 |
+| join phases with the same operation (leading verb; hand-only motion joins the next) | 0.303 | 0.120 |
+| the same, captions with the instruction | 0.311 | 0.093 |
+| TempSeg, split where the operation changes inside a segment | 0.320 | 0.128 |
+
+The Captioner is trained on whole subtasks; on 0.5–2 s phases it describes the
+fragment ("hold", "lift", "move toward …"), and without the instruction it
+misreads DROID's objects (a bowl becomes a pen, a cable, a mouse). Its
+operations carry some signal but too little: neighbouring phases inside one
+reference subtask share the operation in 68 % (Galaxea) and 55 % (DROID) of
+cases, phases across a reference cut in 40 % and 29 %.
+
 ## Remote server
 
 `kinseg/remote/flora-remote` drives a remote development server whose account
