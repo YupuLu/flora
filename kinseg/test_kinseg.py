@@ -57,6 +57,23 @@ def test_beliefs_labels_and_merge():
     assert merge_phases([(0, 1), (1, 2), (2, 3)], [2]) == [(0, 2), (2, 3)]
 
 
+def test_caption_join():
+    from caption_merge import initial_intervals, join_equal, normalise
+
+    assert normalise("Pick up the black bowl.") == normalise("pick up  black bowl") == "pick up black bowl"
+    items = [dict(start_s=0, end_s=1, caption="Pick up the bowl.", status="complete", members=[0]),
+             dict(start_s=1, end_s=2, caption="pick up bowl", status="complete", members=[1]),
+             dict(start_s=2, end_s=2.1, caption="", status="unsupported_target_frames", members=[2]),
+             dict(start_s=2.1, end_s=4, caption="Place the bowl on the plate.", status="complete", members=[3])]
+    joined = join_equal(items)
+    assert [(j["start_s"], j["end_s"], j["members"], j["joined"]) for j in joined] == [
+        (0, 2.1, [0, 1, 2], True), (2.1, 4, [3], False)]
+    case = {"predictions": [{"start_sec": 0, "end_sec": 1}, {"start_sec": 1, "end_sec": 3}]}
+    assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, None)] == [(0, 1), (1, 3)]
+    tempseg = {"segments": [{"start_s": 0.0, "end_s": 2.0}, {"start_s": 2.0, "end_s": 3.0}]}
+    assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 
