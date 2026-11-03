@@ -27,9 +27,11 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     import decoding
+    import local_models
     from batch_utils import pipeline
     from batch_utils.models import Session
 
+    local_models.configure()
     session = Session()
     loaded = session.load("tempseg")
     session.load = lambda kind: loaded

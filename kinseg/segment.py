@@ -174,11 +174,13 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     import torch
+    import local_models
     from batch_utils import pipeline
     from batch_utils.models import Session
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required")
+    local_models.configure()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     session = Session()

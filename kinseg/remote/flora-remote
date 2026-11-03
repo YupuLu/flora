@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# flora-remote: control the remote development server for kinseg experiments.
+#
+# Configuration: kinseg/remote/remote.env (not in git; copy remote.env.example)
+#   FLORA_REMOTE               user@host
+#   FLORA_REMOTE_PORT          SSH port (default 22)
+#   FLORA_REMOTE_REPO          Flora checkout on the remote, on this branch
+#   FLORA_REMOTE_DATA          remote folder for data, autolabel code, outputs and logs
+#   FLORA_REMOTE_PYTHON        Python of the remote environment
+#   FLORA_REMOTE_PROXY         HTTP proxy the remote needs for GitHub (optional)
+#   FLORA_REMOTE_LOCAL_MODELS  module with configure_local_models() (optional; see kinseg/local_models.py)
+#
+# Commands:
+#   sync                                push this branch, then fast-forward the remote checkout to it
+#   push [--follow] [--exclude PAT]... LOCAL REL
+#                                       copy a local file or folder into $FLORA_REMOTE_DATA/REL
+#   pull REL LOCAL_DIR                  copy $FLORA_REMOTE_DATA/REL into LOCAL_DIR
+#   run [--gpus 0,1] [--bg NAME] -- CMD...
+#                                       run CMD in the remote checkout and environment; --bg detaches
+#                                       it with its log in $FLORA_REMOTE_DATA/logs/NAME.log
+#   log NAME [LINES]                    end of a background run's log
+#   status                              GPU memory and ticli workers
+#   launch TICLI_FLAGS... -- CMD...     start a ticli worker pod running CMD in the same environment
+#   shell                               interactive SSH session
+#
+# The remote account is shared, so this script never deletes anything there:
+# copies add or update files (tar over ssh, no deletion) and sync only
+# fast-forwards. No credentials are kept on the remote; it pulls the public fork.
+set -euo pipefail
+
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+[[ -f "$here/remote.env" ]] && source "$here/remote.env"
+: "${FLORA_REMOTE:?set FLORA_REMOTE in $here/remote.env (see remote.env.example)}"
+: "${FLORA_REMOTE_REPO:?set FLORA_REMOTE_REPO in $here/remote.env}"
+: "${FLORA_REMOTE_DATA:?set FLORA_REMOTE_DATA in $here/remote.env}"
+: "${FLORA_REMOTE_PYTHON:?set FLORA_REMOTE_PYTHON in $here/remote.env}"
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=20 -p "${FLORA_REMOTE_PORT:-22}")
+
+q() { printf '%q' "$1"; }
+join_q() { local out="" a; for a in "$@"; do out+="$(q "$a") "; done; printf '%s' "${out% }"; }
+remote() { "${SSH[@]}" "$FLORA_REMOTE" "$1"; }
+die() { echo "flora-remote: $*" >&2; exit 2; }
+
+env_prefix() {
+  local p=""
+  if [[ -n "${FLORA_REMOTE_PROXY:-}" ]]; then
+    p+="export https_proxy=$(q "$FLORA_REMOTE_PROXY") http_proxy=$(q "$FLORA_REMOTE_PROXY"); "
+  fi
+  if [[ -n "${FLORA_REMOTE_LOCAL_MODELS:-}" ]]; then
+    p+="export FLORA_LOCAL_MODELS=$(q "$FLORA_REMOTE_LOCAL_MODELS"); "
+  fi
+  p+="export PATH=$(q "$(dirname -- "$FLORA_REMOTE_PYTHON")"):\$PATH PYTHONDONTWRITEBYTECODE=1; "
+  p+="cd $(q "$FLORA_REMOTE_REPO")"
+  printf '%s' "$p"
+}
+
+cmd_sync() {
+  local branch
+  branch="$(git -C "$here" rev-parse --abbrev-ref HEAD)"
+  if [[ -n "$(git -C "$here" status --porcelain --untracked-files=no)" ]]; then
+    die "tracked files have uncommitted changes; commit them first (the remote only receives commits)"
+  fi
+  git -C "$here" push -q origin "$branch"
+  local b; b="$(q "$branch")"
+  remote "$(env_prefix) && git fetch -q origin && { git checkout -q $b 2>/dev/null || git checkout -q -b $b --track origin/$b; } && git merge -q --ff-only origin/$b && git log --oneline -1"
+}
+
+cmd_push() {
+  local opts=() follow=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --follow) follow="-h"; shift ;;
+      --exclude) opts+=("--exclude=$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
+  [[ $# -eq 2 ]] || die "usage: push [--follow] [--exclude PAT]... LOCAL REL"
+  local src="$1" dest="$FLORA_REMOTE_DATA/$2"
+  [[ -e "$src" ]] || die "no such local path: $src"
+  remote "mkdir -p $(q "$dest")"
+  tar -C "$(dirname -- "$src")" $follow --exclude=__pycache__ "${opts[@]}" -czf - "$(basename -- "$src")" \
+    | "${SSH[@]}" "$FLORA_REMOTE" "tar -C $(q "$dest") --no-same-owner -xzf -"
+  echo "copied $src -> $FLORA_REMOTE:$dest/$(basename -- "$src")"
+}
+
+cmd_pull() {
+  [[ $# -eq 2 ]] || die "usage: pull REL LOCAL_DIR"
+  local src="$FLORA_REMOTE_DATA/$1"
+  mkdir -p "$2"
+  "${SSH[@]}" "$FLORA_REMOTE" "tar -C $(q "$(dirname -- "$src")") -czf - $(q "$(basename -- "$src")")" | tar -C "$2" -xzf -
+  echo "copied $FLORA_REMOTE:$src -> $2/$(basename -- "$src")"
+}
+
+cmd_run() {
+  local gpus="" bg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --gpus) gpus="$2"; shift 2 ;;
+      --bg) bg="$2"; shift 2 ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  [[ $# -gt 0 ]] || die "run: give the command after --"
+  local pre cmd
+  pre="$(env_prefix)"
+  [[ -n "$gpus" ]] && pre+="; export CUDA_VISIBLE_DEVICES=$(q "$gpus")"
+  cmd="$(join_q "$@")"
+  if [[ -z "$bg" ]]; then
+    remote "$pre && $cmd"
+    return
+  fi
+  [[ "$bg" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "--bg NAME: letters, digits, '_', '.', '-'"
+  local log="$FLORA_REMOTE_DATA/logs/$bg.log"
+  remote "mkdir -p $(q "$FLORA_REMOTE_DATA/logs") && $pre && nohup setsid bash -c $(q "$cmd") > $(q "$log") 2>&1 < /dev/null & echo \"started $bg (pid \$!), log $log\""
+}
+
+cmd_log() {
+  [[ $# -ge 1 ]] || die "usage: log NAME [LINES]"
+  remote "tail -n $(q "${2:-40}") $(q "$FLORA_REMOTE_DATA/logs/$1.log")"
+}
+
+cmd_status() {
+  remote "nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader; echo; ticli worker list 2>&1 | head -20"
+}
+
+cmd_launch() {
+  local flags=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do flags+=("$1"); shift; done
+  [[ "${1:-}" == "--" ]] && shift
+  [[ $# -gt 0 ]] || die "usage: launch TICLI_FLAGS... -- CMD..."
+  local inner
+  inner="$(env_prefix) && $(join_q "$@")"
+  remote "ticli worker launch $(join_q "${flags[@]}") bash -lc $(q "$inner")"
+}
+
+cmd_shell() { exec ssh -t -p "${FLORA_REMOTE_PORT:-22}" "$FLORA_REMOTE"; }
+
+command="${1:-}"
+[[ -n "$command" ]] || { sed -n '2,32p' "$0"; exit 2; }
+shift
+case "$command" in
+  sync|push|pull|run|log|status|launch|shell) "cmd_$command" "$@" ;;
+  *) die "unknown command '$command' (sync, push, pull, run, log, status, launch, shell)" ;;
+esac

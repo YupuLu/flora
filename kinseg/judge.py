@@ -206,9 +206,12 @@ def ask(model, proc, clip_a, clip_b, variant: str = "pair") -> Dict[str, object]
 
 
 def run(args) -> int:
+    import local_models
+
     kin = {json.loads(p.read_text())["id"]: p for p in Path(args.kinematic).glob("predictions/*/*.json")}
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    local_models.configure()
     model, proc = load_model()
     for episode in args.episodes:
         out = out_dir / f"{episode}.json"
@@ -220,7 +223,8 @@ def run(args) -> int:
         cuts = candidate_cuts(case, tempseg)
         duration = tempseg["duration_s"]
         plans = [clip_times(c["t"], duration) for c in cuts]
-        frames = decode_frames(tempseg["cameras"]["main"], [t for a, b in plans for t in a + b])
+        video = str(Path(args.videos) / f"{episode}.mp4") if args.videos else tempseg["cameras"]["main"]
+        frames = decode_frames(video, [t for a, b in plans for t in a + b])
         started = time.monotonic()
         for cut, (a, b) in zip(cuts, plans):
             cut.update(ask(model, proc, [frames[t] for t in a], [frames[t] for t in b], args.variant))
@@ -289,6 +293,7 @@ def main(argv=None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--kinematic", required=True)
     r.add_argument("--tempseg", required=True, help="segment.py output dir (free run)")
+    r.add_argument("--videos", help="folder of <episode>.mp4 (default: the path recorded by segment.py)")
     r.add_argument("--episodes", nargs="+", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--overwrite", action="store_true")
