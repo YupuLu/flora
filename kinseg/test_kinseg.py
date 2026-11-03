@@ -75,6 +75,24 @@ def test_caption_join():
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
 
 
+def test_operation_join():
+    from caption_merge import join_operations, limb_motion, operation
+
+    assert operation("Pick up the pink test tube.") == "pick up" and operation("place the marker") == "place"
+    assert limb_motion("move the left hand back.") and limb_motion("Raise both hands.")
+    assert not limb_motion("move the pink stick to the right")
+    caps = ["raise both hands.", "move the left hand toward the pink stick", "pick up the pink cylindrical object",
+            "pick up the pink test tube", "place the pink marker vertically", "place the pink marker below",
+            "move the left hand back."]
+    items = [dict(start_s=float(k), end_s=float(k + 1), caption=c) for k, c in enumerate(caps)]
+    joined = join_operations(items)
+    assert [(j["start_s"], j["end_s"], j["key"]) for j in joined] == [(0.0, 4.0, "pick up"), (4.0, 7.0, "place")]
+    from caption_merge import split_by_operation
+    # One TempSeg segment over pick-up and place phases is split where the operation changes.
+    assert split_by_operation([(0.2, 7.0)], items) == [(0.2, 4.0), (4.0, 7.0)]
+    assert split_by_operation([(0.0, 3.5), (3.5, 7.0)], items) == [(0.0, 3.5), (3.5, 4.0), (4.0, 7.0)]
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 

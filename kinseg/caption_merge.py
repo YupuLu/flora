@@ -28,7 +28,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -58,6 +58,65 @@ def join_equal(intervals: List[Dict[str, object]]) -> List[Dict[str, object]]:
 
 
 MIN_TILE_S = 0.05
+
+
+PARTICLES = {"up", "down", "over", "out", "in", "off", "on", "back", "away", "into", "onto"}
+LIMBS = {"hand", "hands", "arm", "arms", "gripper", "grippers"}
+MOTION_VERBS = {"move", "raise", "lower", "lift", "hold", "withdraw", "retract", "return", "reach", "bring", "keep"}
+
+
+def operation(caption: str) -> str:
+    """Leading verb phrase of a caption ("pick up", "place", "push"), '' if empty."""
+    words = normalise(caption).split()
+    if not words:
+        return ""
+    return " ".join(words[:2]) if len(words) > 1 and words[1] in PARTICLES else words[0]
+
+
+def limb_motion(caption: str) -> bool:
+    """A caption that only moves a hand or arm (an approach or a retreat), e.g. "raise both hands"."""
+    words = normalise(caption).split()
+    return len(words) >= 2 and words[0] in MOTION_VERBS and any(w in LIMBS for w in words[1:4])
+
+
+def operation_keys(intervals: List[Dict[str, object]]) -> List[str]:
+    """Operation of each interval; limb-only motion takes the next operation's (the last, the previous one's)."""
+    keys: List[str] = []
+    for item in intervals:
+        caption = item.get("caption") or ""
+        keys.append("" if limb_motion(caption) else operation(caption))
+    for k in range(len(keys) - 2, -1, -1):  # approaches take the next operation's key
+        if keys[k] == "":
+            keys[k] = keys[k + 1]
+    for k in range(1, len(keys)):  # a trailing motion takes the previous one's
+        if keys[k] == "":
+            keys[k] = keys[k - 1]
+    return keys
+
+
+def split_by_operation(segments: List[Tuple[float, float]], intervals: List[Dict[str, object]]) -> List[Tuple[float, float]]:
+    """Split each segment where the operation of the captioned intervals inside it changes."""
+    keys = operation_keys(intervals)
+    out: List[Tuple[float, float]] = []
+    for a, b in segments:
+        inside = [(item, key) for item, key in zip(intervals, keys) if a <= (item["start_s"] + item["end_s"]) / 2 < b]
+        cuts = [item["start_s"] for (item, key), (_, prev) in zip(inside[1:], inside[:-1]) if key != prev]
+        edges = [a] + [c for c in cuts if a < c < b] + [b]
+        out += list(zip(edges[:-1], edges[1:]))
+    return out
+
+
+def join_operations(intervals: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Join consecutive intervals of one operation; limb-only motion joins the next operation."""
+    keys = operation_keys(intervals)
+    out: List[Dict[str, object]] = []
+    for item, key in zip(intervals, keys):
+        if out and key == out[-1]["key"]:
+            out[-1]["end_s"] = item["end_s"]
+            out[-1]["captions"].append(item.get("caption", ""))
+        else:
+            out.append(dict(start_s=item["start_s"], end_s=item["end_s"], key=key, captions=[item.get("caption", "")]))
+    return out
 
 
 def tiles(cuts: List[float], start: float, end: float) -> List[Dict[str, object]]:
@@ -187,8 +246,16 @@ def score(args) -> int:
         rec = json.loads(path.read_text())
         refs = kin[rec["id"]]["references"]
         fam = fams.setdefault(rec["family"], {})
-        first = join_equal([dict(r, members=r["members"]) for r in rec["rounds"][0]])
-        variants = {"round 1 join": first, "final": rec["final"]}
+        first = rec["rounds"][0]
+        variants = {"exact join": join_equal([dict(r, members=r["members"]) for r in first]),
+                    "operation join": join_operations(first)}
+        if len(rec["rounds"]) > 1:
+            variants["exact, iterated"] = rec["final"]
+        if args.tempseg:
+            segs = sorted((s["start_s"], s["end_s"]) for s in
+                          json.loads((Path(args.tempseg) / f"{rec['id']}.json").read_text())["segments"])
+            variants["TempSeg"] = [dict(start_s=a, end_s=b) for a, b in segs]
+            variants["TempSeg + op. split"] = [dict(start_s=a, end_s=b) for a, b in split_by_operation(segs, first)]
         for name, intervals in variants.items():
             fam.setdefault(name, []).append({"predictions": [{"start_sec": i["start_s"], "end_sec": i["end_s"]}
                                                              for i in intervals], "references": refs})
@@ -197,7 +264,7 @@ def score(args) -> int:
         for name, items in by.items():
             s = score_family(items)
             seg = s["segment@0.75"]
-            lines.append(f"{family:8s} {name:13s} episodes {len(items):2d}  pred/ref {seg['n_pred']}/{seg['n_ref']}  "
+            lines.append(f"{family:8s} {name:16s} episodes {len(items):2d}  pred/ref {seg['n_pred']}/{seg['n_ref']}  "
                          f"F1@0.75 {seg['f1']:.3f}  F1@0.5 {s['segment@0.5']['f1']:.3f}  "
                          f"boundary recall 0.5 s {s['boundary_recall@0.5s']['recall']:.3f}")
     text = "\n".join(lines)
@@ -224,6 +291,7 @@ def main(argv=None) -> int:
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
     s.add_argument("--kinematic", required=True)
     s.add_argument("--out", required=True)
+    s.add_argument("--tempseg", help="segment.py output dir: also score TempSeg split where the operation changes")
     args = ap.parse_args(argv)
     if args.command == "run" and args.cuts == "union" and not args.tempseg:
         ap.error("--cuts union needs --tempseg")
