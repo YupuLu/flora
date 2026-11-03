@@ -166,7 +166,8 @@ cmd_run() {
   [[ "$bg" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "--bg NAME: letters, digits, '_', '.', '-'"
   local log="$FLORA_REMOTE_DATA/logs/$bg.log"
   # Only the nohup command goes to the background, with every stream redirected, so ssh returns at once.
-  remote "mkdir -p $(q "$FLORA_REMOTE_DATA/logs") && $pre && { nohup setsid bash -c $(q "$cmd") > $(q "$log") 2>&1 < /dev/null & } && echo \"started $bg (pid \$!), log $log\""
+  # --norc --noprofile: on the server a detached bash otherwise reads a startup file that resets PATH.
+  remote "mkdir -p $(q "$FLORA_REMOTE_DATA/logs") && $pre && { nohup setsid bash --norc --noprofile -c $(q "$cmd") > $(q "$log") 2>&1 < /dev/null & } && echo \"started $bg (pid \$!), log $log\""
 }
 
 cmd_log() {
