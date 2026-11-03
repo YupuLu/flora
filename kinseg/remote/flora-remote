@@ -13,8 +13,10 @@
 # Commands:
 #   sync                                push this branch, then fast-forward the remote checkout to it
 #   verify                              check that nobody changed the remote checkout
-#   push [--follow] [--exclude PAT]... LOCAL REL
-#                                       copy a local file or folder into $FLORA_REMOTE_DATA/REL
+#   push [--follow] [--exclude PAT]... [--parallel N] [--update] LOCAL REL
+#                                       copy a local file or folder into $FLORA_REMOTE_DATA/REL;
+#                                       --parallel N uses N streams (the link limits each one),
+#                                       --update skips files already there with the same size
 #   pull REL LOCAL_DIR                  copy $FLORA_REMOTE_DATA/REL into LOCAL_DIR
 #   run [--gpus 0,1] [--bg NAME] -- CMD...
 #                                       run CMD in the remote checkout and environment; --bg detaches
@@ -84,22 +86,54 @@ cmd_sync() {
 }
 
 cmd_push() {
-  local opts=() follow=""
+  local opts=() follow="" jobs=1 update=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --follow) follow="-h"; shift ;;
       --exclude) opts+=("--exclude=$2"); shift 2 ;;
       --exclude=*) opts+=("$1"); shift ;;
+      --parallel) jobs="$2"; shift 2 ;;
+      --update) update=1; shift ;;
       *) break ;;
     esac
   done
-  [[ $# -eq 2 ]] || die "usage: push [--follow] [--exclude PAT]... LOCAL REL"
+  [[ $# -eq 2 ]] || die "usage: push [--follow] [--exclude PAT]... [--parallel N] [--update] LOCAL REL"
   local src="$1" dest="$FLORA_REMOTE_DATA/$2"
   [[ -e "$src" ]] || die "no such local path: $src"
+  local parent name
+  parent="$(dirname -- "$src")"; name="$(basename -- "$src")"
   remote "mkdir -p $(q "$dest")"
-  tar -C "$(dirname -- "$src")" $follow --exclude=__pycache__ "${opts[@]}" -czf - "$(basename -- "$src")" \
-    | "${SSH[@]}" "$FLORA_REMOTE" "tar -C $(q "$dest") --no-same-owner -xzf -"
-  echo "copied $src -> $FLORA_REMOTE:$dest/$(basename -- "$src")"
+  if [[ "$jobs" -le 1 && -z "$update" ]]; then
+    tar -C "$parent" $follow --exclude=__pycache__ "${opts[@]}" -czf - "$name" \
+      | "${SSH[@]}" "$FLORA_REMOTE" "tar -C $(q "$dest") --no-same-owner -xzf -"
+    echo "copied $src -> $FLORA_REMOTE:$dest/$name"
+    return
+  fi
+  # File by file: the link limits each connection, so N streams are faster; --update skips files
+  # already on the remote with the same size.
+  [[ ${#opts[@]} -eq 0 ]] || die "--exclude is not supported with --parallel/--update"
+  local tmp; tmp="$(mktemp -d)"
+  (cd "$parent" && find -L "$name" -type f ! -path '*/__pycache__/*' -printf '%s\t%p\n') | sort > "$tmp/local"
+  if [[ -n "$update" ]]; then
+    "${SSH[@]}" "$FLORA_REMOTE" "cd $(q "$dest") && find $(q "$name") -type f -printf '%s\t%p\n' 2>/dev/null" \
+      | sort > "$tmp/remote" || true
+    comm -23 "$tmp/local" "$tmp/remote" > "$tmp/todo"
+  else
+    cp "$tmp/local" "$tmp/todo"
+  fi
+  local n; n="$(wc -l < "$tmp/todo")"
+  echo "$n of $(wc -l < "$tmp/local") files to copy over $jobs streams"
+  cut -f2- "$tmp/todo" | awk -v dir="$tmp" -v n="$jobs" '{ print > (dir "/part" (NR % n)) }'
+  local part pids=() failed=0
+  for part in "$tmp"/part*; do
+    [[ -e "$part" ]] || continue
+    tar -C "$parent" $follow -czf - -T "$part" \
+      | "${SSH[@]}" "$FLORA_REMOTE" "tar -C $(q "$dest") --no-same-owner -xzf -" &
+    pids+=("$!")
+  done
+  for part in "${pids[@]}"; do wait "$part" || failed=1; done
+  [[ "$failed" -eq 0 ]] || die "some streams failed; rerun with --update to copy what is missing"
+  echo "copied $n files of $src -> $FLORA_REMOTE:$dest/$name"
 }
 
 cmd_pull() {
