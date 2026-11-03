@@ -53,6 +53,35 @@ python kinseg/merge.py --autolabel <autolabel checkout> --kinematic <run> --flor
 A job row is `{"id", "video", "profile": "yam"}`; WGO videos are single-view,
 so the robot profile runs on the main view only.
 
+## Remote server
+
+`kinseg/remote/flora-remote` drives a remote development server whose account
+is shared, so it never deletes anything there and keeps no credentials there:
+the remote checkout pulls this public fork, and private code and data are
+copied with tar over ssh. Configuration is in `kinseg/remote/remote.env`
+(untracked; see `remote.env.example`).
+
+```bash
+kinseg/remote/flora-remote sync      # push this branch, fast-forward the remote checkout
+kinseg/remote/flora-remote verify    # the remote checkout is unchanged since the last sync
+kinseg/remote/flora-remote push --parallel 8 --update <local dir> <remote rel>   # resumable copy
+kinseg/remote/flora-remote run --gpus 0 --bg <name> -- python kinseg/judge.py run ...
+kinseg/remote/flora-remote log <name>
+kinseg/remote/flora-remote status    # GPU memory and ticli workers
+kinseg/remote/flora-remote launch --cpu 8 --gpu 1 --gpu-type <type> --mem 64 -- <command>
+```
+
+`sync`, `run` and `launch` refuse to use a remote checkout with edited
+tracked files, untracked files under `kinseg/` or commits missing from
+GitHub. On the remote, `FLORA_REMOTE_LOCAL_MODELS` points `kinseg` at the
+local weight folders through `kinseg/local_models.py`. The link limits each
+connection (about 44 KB/s), so `push --parallel` splits files over several
+streams; public datasets can also be downloaded on the remote through its
+proxy. `check_decoding.py` gives identical replies on the remote's RTX PRO
+5000 GPUs (all six windows of `galaxea_002`), where a window takes 3–6 s, but
+TempSeg used six windows there against five on our H20, so remote and local
+runs need not be bit-identical.
+
 ## Results (2026-11-02, WGO-Bench robot episodes, F1@0.75)
 
 | Rule | Galaxea (25) | DROID (50) |
