@@ -46,7 +46,7 @@ POLICY = """An operation is one meaningful step such as picking up an object, pl
 Acquisition and delivery are distinct operations; retain distinct directional handovers. Ordinary contacts,
 adjustments and low-motion pauses within the same ongoing goal do not start a new operation."""
 
-PAIR = """You see two consecutive clips of a robot manipulation video.
+PAIR = """You see two consecutive clips of a robot manipulation video.{task}
 Clip A (the {a:.1f} s just before a moment in the video):
 <video>
 Clip B (the {b:.1f} s just after that moment):
@@ -55,13 +55,13 @@ Is the robot performing the same operation in clip A and clip B, or does a new o
 """ + POLICY + """
 Answer with exactly one word: Yes if it is the same operation, No if a new operation starts."""
 
-SINGLE = """You see a {d:.1f} s clip of a robot manipulation video.
+SINGLE = """You see a {d:.1f} s clip of a robot manipulation video.{task}
 <video>
 Does the robot start a new operation at {m:.1f} seconds into this clip, or does the same operation continue?
 """ + POLICY + """
 Answer with exactly one word: Yes if a new operation starts at {m:.1f} seconds, No if the same operation continues."""
 
-DESCRIBE = """You see two consecutive clips of a robot manipulation video.
+DESCRIBE = """You see two consecutive clips of a robot manipulation video.{task}
 Clip A (the {a:.1f} s just before a moment in the video):
 <video>
 Clip B (the {b:.1f} s just after that moment):
@@ -95,7 +95,7 @@ def candidate_cuts(case: Dict[str, object], tempseg: Dict[str, object]) -> List[
     return cuts
 
 
-def decode_frames(path: str, times: Sequence[float]):
+def decode_frames(path: str, times: Sequence[float], max_pixels: int = MAX_PIXELS):
     """RGB frames (PIL) nearest to ``times`` (seconds from the first frame)."""
     import av
 
@@ -114,7 +114,7 @@ def decode_frames(path: str, times: Sequence[float]):
         for t in wanted:
             k = min(range(len(stamps)), key=lambda i: abs(stamps[i] - t))
             image = frames[k].to_image().convert("RGB")
-            scale = min(1.0, (MAX_PIXELS / (image.width * image.height)) ** 0.5)
+            scale = min(1.0, (max_pixels / (image.width * image.height)) ** 0.5)
             if scale < 1.0:
                 image = image.resize((max(32, int(image.width * scale)), max(32, int(image.height * scale))))
             picked[t] = image
@@ -179,24 +179,25 @@ def _two_way(model, inputs, tokenizer, positive: str, negative: str) -> Dict[str
     return {"p": float(pair[0]), "mass": float(torch.softmax(logits, dim=-1)[ids].sum())}
 
 
-def ask(model, proc, clip_a, clip_b, variant: str = "pair") -> Dict[str, object]:
+def ask(model, proc, clip_a, clip_b, variant: str = "pair", instruction: str = "") -> Dict[str, object]:
     """Probability that a new operation starts at the cut between ``clip_a`` and ``clip_b``."""
     import torch
 
     a, b = len(clip_a) / SAMPLE_HZ, len(clip_b) / SAMPLE_HZ
+    task = f"\nThe robot's task in this episode: {instruction.strip()}" if instruction.strip() else ""
     if variant == "pair":
-        inputs = _inputs(proc, PAIR.format(a=a, b=b), [clip_a, clip_b])
+        inputs = _inputs(proc, PAIR.format(a=a, b=b, task=task), [clip_a, clip_b])
         res = _two_way(model, inputs, proc.tokenizer, "No", "Yes")
     elif variant == "single":
-        inputs = _inputs(proc, SINGLE.format(d=a + b, m=a), [list(clip_a) + list(clip_b)])
+        inputs = _inputs(proc, SINGLE.format(d=a + b, m=a, task=task), [list(clip_a) + list(clip_b)])
         res = _two_way(model, inputs, proc.tokenizer, "Yes", "No")
     else:
-        inputs = _inputs(proc, DESCRIBE.format(a=a, b=b), [clip_a, clip_b])
+        inputs = _inputs(proc, DESCRIBE.format(a=a, b=b, task=task), [clip_a, clip_b])
         with torch.inference_mode():
             out = model.generate(**inputs, max_new_tokens=48, do_sample=False)
         reply = proc.tokenizer.decode(out[0, inputs["input_ids"].shape[1]:], skip_special_tokens=True)
         head = reply.split("Answer:")[0].rstrip() + "\nAnswer:"
-        res = _two_way(model, _inputs(proc, DESCRIBE.format(a=a, b=b), [clip_a, clip_b], head),
+        res = _two_way(model, _inputs(proc, DESCRIBE.format(a=a, b=b, task=task), [clip_a, clip_b], head),
                        proc.tokenizer, " New", " Same")
         res["reply"] = reply.strip()
     out = {"p_new": round(res.pop("p"), 4), "answer_mass": round(res.pop("mass"), 4),
@@ -224,11 +225,13 @@ def run(args) -> int:
         duration = tempseg["duration_s"]
         plans = [clip_times(c["t"], duration) for c in cuts]
         video = str(Path(args.videos) / f"{episode}.mp4") if args.videos else tempseg["cameras"]["main"]
-        frames = decode_frames(video, [t for a, b in plans for t in a + b])
+        frames = decode_frames(video, [t for a, b in plans for t in a + b], args.max_pixels)
+        instruction = case.get("instruction", "") if args.instruction else ""
         started = time.monotonic()
         for cut, (a, b) in zip(cuts, plans):
-            cut.update(ask(model, proc, [frames[t] for t in a], [frames[t] for t in b], args.variant))
+            cut.update(ask(model, proc, [frames[t] for t in a], [frames[t] for t in b], args.variant, instruction))
         record = dict(id=episode, family=case["family"], model=f"{BASE}@{BASE_REVISION}", variant=args.variant,
+                      instruction=instruction, max_pixels=args.max_pixels,
                       clip_s=CLIP_S,
                       sample_hz=SAMPLE_HZ, cuts=cuts, elapsed_s=round(time.monotonic() - started, 1))
         out.write_text(json.dumps(record, indent=1) + "\n")
@@ -294,6 +297,8 @@ def main(argv=None) -> int:
     r.add_argument("--kinematic", required=True)
     r.add_argument("--tempseg", required=True, help="segment.py output dir (free run)")
     r.add_argument("--videos", help="folder of <episode>.mp4 (default: the path recorded by segment.py)")
+    r.add_argument("--instruction", action="store_true", help="give the episode's task instruction in the prompt")
+    r.add_argument("--max-pixels", type=int, default=MAX_PIXELS, help="pixels per frame before the processor")
     r.add_argument("--episodes", nargs="+", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--overwrite", action="store_true")
