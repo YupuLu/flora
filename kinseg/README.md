@@ -123,3 +123,18 @@ away from TempSeg's own cuts.
 A same-or-different judge on our cuts is worth having (the ceiling beats
 TempSeg alone, by 0.17 on DROID), but TempSeg's probabilities are not that
 judge: they add nothing to the position of its own cuts.
+
+The same ceiling per candidate set (for each reference cut, keep the nearest
+candidate within 0.5 s; join across the rest):
+
+| Candidate cuts | Galaxea: ref. cuts covered / F1@0.75 | DROID: ref. cuts covered / F1@0.75 |
+|---|---:|---:|
+| ours | 80/98, 0.728 | 69/100, 0.729 |
+| TempSeg's | 76/98, 0.741 | 30/100, 0.374 |
+| ours and TempSeg's | 94/98, 0.917 | 80/100, 0.850 |
+
+The two sets are complementary: each holds reference cuts the other misses,
+so a judge choosing among both could go well beyond either. The 0.5 s rule is
+conservative: TempSeg alone reaches 0.562 on DROID, above its 0.374 ceiling,
+because on DROID's long segments a cut more than 0.5 s off can still reach
+tIoU 0.75.
