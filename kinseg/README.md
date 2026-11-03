@@ -17,6 +17,8 @@ subtasks; its cuts lie on a 0.5 s grid in practice.
 | `decoding.py` | Greedy decoding with whole-value choice of `s`/`e` and their log-probabilities |
 | `check_decoding.py` | GPU check that `decoding.py` without candidates reproduces TempSeg's `generate` |
 | `merge.py` | Post-hoc combination rules and their scores |
+| `beliefs.py` | TempSeg's grid beliefs (from `--probe`) as scores of our cuts |
+| `judge.py` | A vision-language same-or-new judge of candidate cuts and its scores |
 | `test_kinseg.py` | CPU checks of the rules and the candidate lists |
 
 ## Setup
@@ -138,3 +140,24 @@ so a judge choosing among both could go well beyond either. The 0.5 s rule is
 conservative: TempSeg alone reaches 0.562 on DROID, above its 0.374 ceiling,
 because on DROID's long segments a cut more than 0.5 s off can still reach
 tIoU 0.75.
+
+### A 9B vision-language judge (`judge.py`), small batch
+
+Qwen3.5-9B base (TempSeg's adapter not loaded) judged every candidate cut
+(ours and TempSeg's) from 3 s of main-camera video before and after it at
+4 Hz, using TempSeg's granularity wording. Six episodes (galaxea_002, 011,
+045; DROID 000003, 000008, 000047; 173 cuts, 36 nearest a reference cut):
+
+| Variant | AUC Galaxea | AUC DROID |
+|---|---:|---:|
+| `pair`: two clips, same operation? | 0.468 | 0.445 |
+| `single`: one 6 s clip, new operation at 3.0 s? | 0.581 | 0.561 |
+| `describe`: name both operations, then Same or New | 0.550 | 0.464 |
+
+All are near chance, and merging by any threshold scores far below TempSeg
+alone (0.500 / 0.261 on these episodes; perfect judge 0.857 / 0.870). The
+descriptions show why: on DROID 000003 ("pick up the black bowl | push the
+black bowl") the model calls the bowl "chopsticks" and "the black cable", and
+it counts an approach followed by a grasp as two operations. At this frame
+size (about 160 k pixels per frame, single view) and without the task
+instruction, the model misreads both the objects and the granularity.
