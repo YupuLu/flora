@@ -12,6 +12,7 @@
 #
 # Commands:
 #   sync                                push this branch, then fast-forward the remote checkout to it
+#   verify                              check that nobody changed the remote checkout
 #   push [--follow] [--exclude PAT]... LOCAL REL
 #                                       copy a local file or folder into $FLORA_REMOTE_DATA/REL
 #   pull REL LOCAL_DIR                  copy $FLORA_REMOTE_DATA/REL into LOCAL_DIR
@@ -26,6 +27,8 @@
 # The remote account is shared, so this script never deletes anything there:
 # copies add or update files (tar over ssh, no deletion) and sync only
 # fast-forwards. No credentials are kept on the remote; it pulls the public fork.
+# Root on a shared account cannot be locked out, so sync, run and launch first
+# check the remote checkout and refuse to use it when someone changed it.
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +58,20 @@ env_prefix() {
   printf '%s' "$p"
 }
 
+# Remote checks that refuse code someone else changed on the shared server: no edited tracked
+# files, no untracked files under kinseg/, and no commits that are not on GitHub.
+remote_guard() {
+  printf '%s' "changed=\$(git status --porcelain --untracked-files=no; git status --porcelain --untracked-files=all -- kinseg); \
+if [ -n \"\$changed\" ]; then echo 'flora-remote: the remote checkout has local changes:' >&2; echo \"\$changed\" >&2; exit 3; fi; \
+up=\$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null) || { echo 'flora-remote: remote branch has no upstream' >&2; exit 3; }; \
+extra=\$(git rev-list \"\$up\"..HEAD); \
+if [ -n \"\$extra\" ]; then echo 'flora-remote: the remote checkout has commits not on GitHub:' >&2; git log --oneline \"\$up\"..HEAD >&2; exit 3; fi"
+}
+
+cmd_verify() {
+  remote "$(env_prefix) && $(remote_guard) && echo \"remote checkout clean at \$(git log --oneline -1)\""
+}
+
 cmd_sync() {
   local branch
   branch="$(git -C "$here" rev-parse --abbrev-ref HEAD)"
@@ -63,7 +80,7 @@ cmd_sync() {
   fi
   git -C "$here" push -q origin "$branch"
   local b; b="$(q "$branch")"
-  remote "$(env_prefix) && git fetch -q origin && { git checkout -q $b 2>/dev/null || git checkout -q -b $b --track origin/$b; } && git merge -q --ff-only origin/$b && git log --oneline -1"
+  remote "$(env_prefix) && $(remote_guard) && git fetch -q origin && { git checkout -q $b 2>/dev/null || git checkout -q -b $b --track origin/$b; } && git merge -q --ff-only origin/$b && git log --oneline -1"
 }
 
 cmd_push() {
@@ -72,6 +89,7 @@ cmd_push() {
     case "$1" in
       --follow) follow="-h"; shift ;;
       --exclude) opts+=("--exclude=$2"); shift 2 ;;
+      --exclude=*) opts+=("$1"); shift ;;
       *) break ;;
     esac
   done
@@ -104,7 +122,7 @@ cmd_run() {
   done
   [[ $# -gt 0 ]] || die "run: give the command after --"
   local pre cmd
-  pre="$(env_prefix)"
+  pre="$(env_prefix) && $(remote_guard) && echo \"code: \$(git log --oneline -1)\""
   [[ -n "$gpus" ]] && pre+="; export CUDA_VISIBLE_DEVICES=$(q "$gpus")"
   cmd="$(join_q "$@")"
   if [[ -z "$bg" ]]; then
@@ -131,16 +149,16 @@ cmd_launch() {
   [[ "${1:-}" == "--" ]] && shift
   [[ $# -gt 0 ]] || die "usage: launch TICLI_FLAGS... -- CMD..."
   local inner
-  inner="$(env_prefix) && $(join_q "$@")"
-  remote "ticli worker launch $(join_q "${flags[@]}") bash -lc $(q "$inner")"
+  inner="$(env_prefix) && $(remote_guard) && $(join_q "$@")"
+  remote "$(env_prefix) && $(remote_guard) && ticli worker launch $(join_q "${flags[@]}") bash -lc $(q "$inner")"
 }
 
 cmd_shell() { exec ssh -t -p "${FLORA_REMOTE_PORT:-22}" "$FLORA_REMOTE"; }
 
 command="${1:-}"
-[[ -n "$command" ]] || { sed -n '2,32p' "$0"; exit 2; }
+[[ -n "$command" ]] || { sed -n "2,35p" "$0"; exit 2; }
 shift
 case "$command" in
-  sync|push|pull|run|log|status|launch|shell) "cmd_$command" "$@" ;;
-  *) die "unknown command '$command' (sync, push, pull, run, log, status, launch, shell)" ;;
+  sync|verify|push|pull|run|log|status|launch|shell) "cmd_$command" "$@" ;;
+  *) die "unknown command '$command' (sync, verify, push, pull, run, log, status, launch, shell)" ;;
 esac
