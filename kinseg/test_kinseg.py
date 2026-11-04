@@ -93,10 +93,12 @@ def test_memory_rule():
     assert not enough_memory("captioner", [])
 
 
-def test_load_retries_only_the_warming_failure(monkeypatch):
+def test_load_retries_only_the_warming_failure(monkeypatch, tmp_path):
+    import functools
     import local_models
 
     monkeypatch.setattr(local_models, "wait_for_memory", lambda kind: None)
+    monkeypatch.setattr(local_models, "load", functools.partial(local_models.load, lock_file=tmp_path / "lock"))
 
     class Session:
         def __init__(self, failures, message):
@@ -114,6 +116,25 @@ def test_load_retries_only_the_warming_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="failed its integrity check"):
         local_models.load(corrupt, "captioner", wait_s=0)
     assert corrupt.calls == 1
+
+
+def test_one_load_at_a_time(tmp_path):
+    import threading
+    from local_models import one_load_at_a_time
+
+    order = []
+
+    def second():
+        with one_load_at_a_time(tmp_path / "lock"):
+            order.append("second")
+
+    with one_load_at_a_time(tmp_path / "lock"):
+        thread = threading.Thread(target=second)
+        thread.start()
+        thread.join(0.3)
+        order.append("first done")
+    thread.join(5)
+    assert order == ["first done", "second"]
 
 
 def test_background_text():

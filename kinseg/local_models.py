@@ -18,6 +18,11 @@ failed:
   checks is read once and the times are watched until they stay unchanged for
   ``SETTLE_S``. The rare failure that still slips through is retried; a wrong
   content hash is never retried.
+* **Concurrent loads.** The times also change while another process on the
+  machine reads the same files: of three Captioner runs started three minutes
+  apart, two failed every attempt while the others were loading. So one model
+  load (warming, FLORA's check, reading the weights) runs at a time per
+  machine, under an exclusive lock on ``LOCK_FILE``.
 * **Shared GPUs.** Other users can hold memory on the same GPUs. Before
   loading, :func:`wait_for_memory` waits (up to ``MEMORY_TIMEOUT_S``) until the
   visible GPUs have the memory the model needs, instead of failing half-way.
@@ -29,6 +34,7 @@ import importlib.util
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -42,6 +48,7 @@ NEED_GIB = {"tempseg": 22.0, "judge": 22.0, "captioner": 62.0}
 SPREAD = {"captioner"}
 MEMORY_TIMEOUT_S = 3600.0
 MEMORY_POLL_S = 60.0
+LOCK_FILE = Path(os.environ.get("KINSEG_LOAD_LOCK", "/tmp/kinseg-model-load.lock"))
 
 _PATHS: Dict[str, Path] = {}
 
@@ -144,23 +151,44 @@ def wait_for_memory(kind: str, timeout_s: float = MEMORY_TIMEOUT_S, poll_s: floa
 # ── loading ────────────────────────────────────────────────────────────
 
 
-def load(session, kind: str, attempts: int = 3, wait_s: float = 60.0, model_dir: Optional[Path] = None):
-    """``session.load(kind)`` after warming its files and waiting for GPU memory.
+@contextmanager
+def one_load_at_a_time(lock_file: Optional[Path] = None):
+    """Hold an exclusive lock on ``lock_file`` (default ``LOCK_FILE``), waiting for other loads."""
+    import fcntl
+
+    with open(lock_file or LOCK_FILE, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            started = time.monotonic()
+            print("waiting for another model load on this machine", flush=True)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            print(f"waited {time.monotonic() - started:.0f} s for the other load", flush=True)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def load(session, kind: str, attempts: int = 3, wait_s: float = 60.0, model_dir: Optional[Path] = None,
+         lock_file: Optional[Path] = None):
+    """``session.load(kind)`` after waiting for GPU memory, alone on the machine, with warmed files.
 
     Only the timestamp failure of FLORA's integrity check is retried.
     """
     model_dir = model_dir or _PATHS.get(kind)
-    if model_dir is not None:
-        warm(Path(model_dir))
     wait_for_memory(kind)
-    for attempt in range(1, attempts + 1):
-        try:
-            return session.load(kind)
-        except RuntimeError as exc:
-            if WARMING_MESSAGE not in str(exc) or attempt == attempts:
-                raise
-            print(f"{kind}: model files changed while being verified (attempt {attempt}); retrying in "
-                  f"{wait_s:g} s", flush=True)
-            time.sleep(wait_s)
-            if model_dir is not None:
-                warm(Path(model_dir))
+    with one_load_at_a_time(lock_file):
+        if model_dir is not None:
+            warm(Path(model_dir))
+        for attempt in range(1, attempts + 1):
+            try:
+                return session.load(kind)
+            except RuntimeError as exc:
+                if WARMING_MESSAGE not in str(exc) or attempt == attempts:
+                    raise
+                print(f"{kind}: model files changed while being verified (attempt {attempt}); retrying in "
+                      f"{wait_s:g} s", flush=True)
+                time.sleep(wait_s)
+                if model_dir is not None:
+                    warm(Path(model_dir))
