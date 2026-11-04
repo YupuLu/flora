@@ -140,8 +140,24 @@ def initial_intervals(case: Dict[str, object], tempseg: Optional[Dict[str, objec
 # ── GPU part ───────────────────────────────────────────────────────────
 
 
-def caption_subset(pipeline, videos, segments, todo, profile, session, instruction) -> Dict[int, Dict[str, str]]:
-    """FLORA's caption_single for ``segments[k]``, ``k`` in ``todo``, with context from the full list."""
+CONSISTENCY = ('Previous interval: "{previous}". If this interval continues the same operation, repeat that '
+               'caption exactly; otherwise write the caption of the new operation.')
+
+
+def consistency_instruction(task: str, previous: str) -> str:
+    """Episode-instruction text giving the previous interval's caption and asking for consistent wording."""
+    lead = f"Task: {task.strip()} " if task.strip() else ""
+    return lead + CONSISTENCY.format(previous=previous.strip())
+
+
+def caption_subset(pipeline, videos, segments, todo, profile, session, instruction,
+                   previous_context: bool = False) -> Dict[int, Dict[str, str]]:
+    """FLORA's caption_single for ``segments[k]``, ``k`` in ``todo``, with context from the full list.
+
+    With ``previous_context``, intervals are captioned in order and each gets the previous interval's
+    caption in the episode-instruction field (the Captioner's one optional text input), with a request
+    to repeat it when the operation continues.
+    """
     import hashlib
     import tempfile
     from flora_unified.unified_input import processor_inputs, prompt as native_prompt
@@ -162,13 +178,19 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, instructi
             image.save(path, format="PNG")
             receipts[i] = dict(path=path.name, png_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                                size=list(image.size))
-        for plan in plans:
+        for plan in sorted(plans, key=lambda p: p["event_index"]):
+            k = plan["event_index"]
+            text_instruction = instruction
+            if previous_context and k > 0:
+                previous = out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")
+                if previous:
+                    text_instruction = consistency_instruction(instruction, previous)
             sample = pipeline.a.caption_sample(plan, receipts, ["main"])
-            if instruction.strip():
+            if text_instruction.strip():
                 from flora_unified.unified_input import load_frames
                 frames, _ = load_frames(sample, root)
                 text = proc.apply_chat_template([dict(role="user", content=native_prompt(sample, proc.video_token)
-                                                      + pipeline.instruction_suffix(instruction))],
+                                                      + pipeline.instruction_suffix(text_instruction))],
                                                 tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 metadata = [VideoMetadata(total_num_frames=len(f), fps=float(videos["main"].rate),
                                           frames_indices=list(b["block_local_timestamp_indices"]))
@@ -212,8 +234,9 @@ def run(args) -> int:
         rounds, started = [], time.monotonic()
         for r in range(args.rounds):
             todo = {k for k, item in enumerate(intervals) if item["status"] is None or item.get("joined")}
-            rows = caption_subset(pipeline, videos, [dict(start_s=i["start_s"], end_s=i["end_s"]) for i in intervals],
-                                  todo, PROFILES[args.profile], session, instruction)
+            rows = caption_subset(pipeline, videos,
+                                  [dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in intervals],
+                                  todo, PROFILES[args.profile], session, instruction, args.previous)
             for k, row in rows.items():
                 intervals[k].update(caption=row["caption"], status=row["status"], joined=False)
             rounds.append([dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"], status=i["status"],
@@ -224,7 +247,8 @@ def run(args) -> int:
             if len(joined) == len(intervals):
                 break
             intervals = joined
-        record = dict(id=episode, family=case["family"], cuts=args.cuts, instruction=instruction, rounds=rounds,
+        record = dict(id=episode, family=case["family"], cuts=args.cuts, instruction=instruction,
+                      previous_context=args.previous, rounds=rounds,
                       final=[dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in
                              join_equal(intervals)],
                       elapsed_s=round(time.monotonic() - started, 1))
@@ -286,6 +310,8 @@ def main(argv=None) -> int:
     r.add_argument("--profile", default="yam")
     r.add_argument("--instruction", action="store_true", help="give the episode's task instruction to the Captioner")
     r.add_argument("--rounds", type=int, default=3)
+    r.add_argument("--previous", action="store_true",
+                   help="caption in order, giving each interval the previous caption and asking for consistent wording")
     r.add_argument("--overwrite", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))

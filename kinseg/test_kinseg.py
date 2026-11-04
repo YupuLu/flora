@@ -75,6 +75,15 @@ def test_caption_join():
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
 
 
+def test_consistency_instruction():
+    from caption_merge import consistency_instruction
+
+    text = consistency_instruction("Move the bowl to the right", "Pick up the black bowl.")
+    assert text.startswith('Task: Move the bowl to the right Previous interval: "Pick up the black bowl."')
+    assert consistency_instruction("", "Place it.").startswith('Previous interval: "Place it."')
+    assert len(consistency_instruction("x" * 1500, "y" * 200)) < 2000  # the field's limit
+
+
 def test_operation_join():
     from caption_merge import join_operations, limb_motion, operation
 
