@@ -77,6 +77,35 @@ operations carry some signal but too little: neighbouring phases inside one
 reference subtask share the operation in 68 % (Galaxea) and 55 % (DROID) of
 cases, phases across a reference cut in 40 % and 29 %.
 
+### Captioner inputs (2026-11-04, 26 episodes)
+
+`caption_merge.py run` varies what the Captioner receives per phase:
+`--context both|before|after|none` (which BEFORE/AFTER video blocks are sent),
+`--background none|task_brief|scene_context|task_and_scene` (the remote
+workspace's background template, `background.py`), `--robot-state` (gripper
+state, gripper events and moving arms of the phase, from the kinematics) and
+`--previous` (the previous phase's caption, for consistent names).
+`caption_merge.py compare --runs NAME=DIR ...` scores runs on their shared
+episodes. Eight variants on 13 Galaxea and 13 DROID episodes, best operation
+joins:
+
+| F1@0.75 on these episodes | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg alone | 0.676 | 0.530 |
+| TempSeg + gripper split | 0.681 | 0.587 |
+| FLORA's default inputs, operation join | 0.282 | 0.118 |
+| task brief, operation join with motion absorbed | 0.362 | 0.182 |
+| task brief + robot state + previous caption (TARGET, AFTER), motion absorbed | 0.250 | 0.306 |
+
+Design, examples and discussion: [SYSTEM.md](SYSTEM.md), section 5.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python kinseg/caption_merge.py run --kinematic <run> --videos <dir> \
+    --episodes galaxea_002 ... --rounds 1 --background task_brief --robot-state --out <dir>
+python kinseg/caption_merge.py compare --autolabel <checkout> --kinematic <run> --tempseg out/tempseg \
+    --runs A=<dir> B=<dir> --out compare.md
+```
+
 ## Remote server
 
 `kinseg/remote/flora-remote` drives a remote development server whose account
@@ -92,8 +121,14 @@ kinseg/remote/flora-remote push --parallel 8 --update <local dir> <remote rel>  
 kinseg/remote/flora-remote run --gpus 0 --bg <name> -- python kinseg/judge.py run ...
 kinseg/remote/flora-remote log <name>
 kinseg/remote/flora-remote status    # GPU memory and ticli workers
-kinseg/remote/flora-remote launch --cpu 8 --gpu 1 --gpu-type <type> --mem 64 -- <command>
+kinseg/remote/flora-remote launch --log <name> --cpu 8 --gpu 1 --mem 64 -- <command>   # ticli worker
 ```
+
+A worker needs the notebook's Worker feature enabled (the TIONE API refuses
+the launch otherwise); `FLORA_REMOTE_WORKER_FLAGS` in `remote.env` holds the
+fixed ticli flags (GPU type, notebook ID, worker key). Model loads on one
+machine run one at a time (`local_models.py`), since concurrent reads change
+the weight files' timestamps and fail FLORA's integrity check.
 
 `sync`, `run` and `launch` refuse to use a remote checkout with edited
 tracked files, untracked files under `kinseg/` or commits missing from
