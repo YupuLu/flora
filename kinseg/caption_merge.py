@@ -409,6 +409,24 @@ def compare(args) -> int:
             lines.append(f"| {name} | {family} | {f['captions']} | {f['echo'] / f['captions']:.2f} | "
                          f"{rate(f['inside'])} / {rate(f['across'])} | {f1(f['exact'])} | "
                          f"{op['f1']:.3f} ({op['n_pred']}/{op['n_ref']}) | {f1(f['split'])} |")
+    if args.tempseg:  # the reference points on the same episodes
+        from merge import boundaries, gripper_events, split_at_grasps
+
+        base: Dict[str, Dict[str, list]] = {}
+        for episode in sorted(common):
+            case = kin[episode]
+            segs = sorted((s["start_s"], s["end_s"]) for s in
+                          json.loads((Path(args.tempseg) / f"{episode}.json").read_text())["segments"])
+            cuts = boundaries([(p["start_sec"], p["end_sec"]) for p in case["predictions"]])
+            b = base.setdefault(case["family"], {"TempSeg alone": [], "TempSeg + gripper split": []})
+            for key, intervals in (("TempSeg alone", segs),
+                                   ("TempSeg + gripper split", split_at_grasps(segs, gripper_events(case), cuts))):
+                b[key].append({"predictions": [{"start_sec": s, "end_sec": e} for s, e in intervals],
+                               "references": case["references"]})
+        lines.append("")
+        for family, b in sorted(base.items()):
+            lines.append(f"{family} on these episodes: " + "; ".join(
+                f"{key} F1 {score_family(items)['segment@0.75']['f1']:.3f}" for key, items in b.items()))
     text = "\n".join(lines)
     print(text)
     if args.out:
