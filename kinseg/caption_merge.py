@@ -215,7 +215,7 @@ def run(args) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     session = Session()
-    loaded = session.load("captioner")
+    loaded = local_models.load(session, "captioner")
     session.load = lambda kind: loaded  # one Captioner for every call
     engine = DataEnginePipeline()
     for episode in args.episodes:

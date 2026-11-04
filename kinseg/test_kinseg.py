@@ -75,6 +75,27 @@ def test_caption_join():
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
 
 
+def test_load_retries_only_the_warming_failure():
+    import local_models
+
+    class Session:
+        def __init__(self, failures, message):
+            self.failures, self.message, self.calls = failures, message, 0
+
+        def load(self, kind):
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise RuntimeError(self.message)
+            return ("model", "proc")
+
+    warming = Session(1, "A model asset changed during its integrity check")
+    assert local_models.load(warming, "captioner", wait_s=0) == ("model", "proc") and warming.calls == 2
+    corrupt = Session(1, "A model asset failed its integrity check")
+    with pytest.raises(RuntimeError, match="failed its integrity check"):
+        local_models.load(corrupt, "captioner", wait_s=0)
+    assert corrupt.calls == 1
+
+
 def test_consistency_instruction():
     from caption_merge import consistency_instruction
 

@@ -33,7 +33,7 @@ def main(argv=None) -> int:
 
     local_models.configure()
     session = Session()
-    loaded = session.load("tempseg")
+    loaded = local_models.load(session, "tempseg")
     session.load = lambda kind: loaded
     flora_generate = pipeline.generate
     results = []

@@ -184,7 +184,7 @@ def main(argv=None) -> int:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     session = Session()
-    loaded = session.load("tempseg")
+    loaded = local_models.load(session, "tempseg")
     session.load = lambda kind: loaded  # reuse one model for every job
     engine = DataEnginePipeline()
     quiet = lambda *a, **k: None  # noqa: E731
