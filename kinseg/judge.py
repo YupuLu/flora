@@ -213,6 +213,7 @@ def run(args) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     local_models.configure()
+    local_models.wait_for_memory("judge")  # no FLORA manifest check here, so no warming
     model, proc = load_model()
     for episode in args.episodes:
         out = out_dir / f"{episode}.json"

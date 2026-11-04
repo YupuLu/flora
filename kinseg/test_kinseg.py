@@ -75,8 +75,28 @@ def test_caption_join():
     assert [(i["start_s"], i["end_s"]) for i in initial_intervals(case, tempseg)] == [(0, 1), (1, 2.0), (2.0, 3)]
 
 
-def test_load_retries_only_the_warming_failure():
+def test_warm_reads_the_checked_files(tmp_path):
     import local_models
+
+    (tmp_path / "a.bin").write_bytes(b"x" * 10)
+    (tmp_path / "b.bin").write_bytes(b"y" * 20)
+    (tmp_path / "SOURCE_MANIFEST.sha256").write_text("00 *a.bin\n11 b.bin\n")
+    assert [p.name for p in local_models.checked_files(tmp_path)] == ["a.bin", "b.bin", "SOURCE_MANIFEST.sha256"]
+    local_models.warm(tmp_path, settle_s=0.01, rounds=2)  # stable files: returns after one check
+
+
+def test_memory_rule():
+    from local_models import enough_memory
+
+    assert enough_memory("tempseg", [30.0, 0.0]) and not enough_memory("tempseg", [20.0, 60.0])
+    assert enough_memory("captioner", [35.0, 35.0]) and not enough_memory("captioner", [60.0, 23.5])
+    assert not enough_memory("captioner", [])
+
+
+def test_load_retries_only_the_warming_failure(monkeypatch):
+    import local_models
+
+    monkeypatch.setattr(local_models, "wait_for_memory", lambda kind: None)
 
     class Session:
         def __init__(self, failures, message):

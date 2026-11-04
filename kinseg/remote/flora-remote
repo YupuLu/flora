@@ -18,8 +18,9 @@
 #                                       --parallel N uses N streams (the link limits each one),
 #                                       --update skips files already there with the same size
 #   pull REL LOCAL_DIR                  copy $FLORA_REMOTE_DATA/REL into LOCAL_DIR
-#   run [--gpus 0,1] [--bg NAME] -- CMD...
-#                                       run CMD in the remote checkout and environment; --bg detaches
+#   run [--gpus 0,1 | auto:N[:GiB]] [--bg NAME] -- CMD...
+#                                       run CMD in the remote checkout and environment; auto:N picks the N
+#                                       GPUs with the most free memory (each at least GiB); --bg detaches
 #                                       it with its log in $FLORA_REMOTE_DATA/logs/NAME.log
 #   log NAME [LINES]                    end of a background run's log
 #   status                              GPU memory and ticli workers
@@ -144,6 +145,17 @@ cmd_pull() {
   echo "copied $FLORA_REMOTE:$src -> $2/$(basename -- "$src")"
 }
 
+# The N GPUs with the most free memory on the remote, each with at least MIN GiB free; comma-separated.
+pick_gpus() {
+  local n="$1" min_gib="$2" picked
+  picked="$(remote "nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits" \
+    | awk -F', *' -v min="$((min_gib * 1024))" '$2 >= min { print $2, $1 }' | sort -rn | head -n "$n" \
+    | awk '{ print $2 }' | paste -sd, -)"
+  [[ -n "$picked" && "$(tr ',' '\n' <<< "$picked" | wc -l)" -eq "$n" ]] \
+    || die "fewer than $n GPUs with ${min_gib} GiB free; see 'flora-remote status'"
+  printf '%s' "$picked"
+}
+
 cmd_run() {
   local gpus="" bg=""
   while [[ $# -gt 0 ]]; do
@@ -155,6 +167,10 @@ cmd_run() {
     esac
   done
   [[ $# -gt 0 ]] || die "run: give the command after --"
+  if [[ "$gpus" =~ ^auto:([0-9]+)(:([0-9]+))?$ ]]; then
+    gpus="$(pick_gpus "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]:-0}")"
+    echo "gpus: $gpus (most free memory now)"
+  fi
   local pre cmd
   pre="$(env_prefix) && $(remote_guard) && echo \"code: \$(git log --oneline -1)\""
   [[ -n "$gpus" ]] && pre+="; export CUDA_VISIBLE_DEVICES=$(q "$gpus")"
@@ -192,7 +208,7 @@ cmd_launch() {
 cmd_shell() { exec ssh -t -p "${FLORA_REMOTE_PORT:-22}" "$FLORA_REMOTE"; }
 
 command="${1:-}"
-[[ -n "$command" ]] || { sed -n "2,35p" "$0"; exit 2; }
+[[ -n "$command" ]] || { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 2; }
 shift
 case "$command" in
   sync|verify|push|pull|run|log|status|launch|shell) "cmd_$command" "$@" ;;
