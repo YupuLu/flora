@@ -28,7 +28,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -79,12 +79,23 @@ def limb_motion(caption: str) -> bool:
     return len(words) >= 2 and words[0] in MOTION_VERBS and any(w in LIMBS for w in words[1:4])
 
 
-def operation_keys(intervals: List[Dict[str, object]]) -> List[str]:
-    """Operation of each interval; limb-only motion takes the next operation's (the last, the previous one's)."""
+def motion_only(caption: str) -> bool:
+    """A caption led by a motion verb, of a hand or of a held object ("lift the pen", "move the cup away").
+
+    As autolabel's VL pipeline (v3) rates reach, transport and retract intervals as low importance and
+    lets them join the neighbouring action, such captions take the next operation's key.
+    """
+    words = normalise(caption).split()
+    return bool(words) and words[0] in MOTION_VERBS
+
+
+def operation_keys(intervals: List[Dict[str, object]], minor: Callable[[str], bool] = limb_motion) -> List[str]:
+    """Operation of each interval; a ``minor`` caption (by default limb-only motion) takes the next
+    operation's (the last, the previous one's)."""
     keys: List[str] = []
     for item in intervals:
         caption = item.get("caption") or ""
-        keys.append("" if limb_motion(caption) else operation(caption))
+        keys.append("" if minor(caption) else operation(caption))
     for k in range(len(keys) - 2, -1, -1):  # approaches take the next operation's key
         if keys[k] == "":
             keys[k] = keys[k + 1]
@@ -94,9 +105,10 @@ def operation_keys(intervals: List[Dict[str, object]]) -> List[str]:
     return keys
 
 
-def split_by_operation(segments: List[Tuple[float, float]], intervals: List[Dict[str, object]]) -> List[Tuple[float, float]]:
+def split_by_operation(segments: List[Tuple[float, float]], intervals: List[Dict[str, object]],
+                       minor: Callable[[str], bool] = limb_motion) -> List[Tuple[float, float]]:
     """Split each segment where the operation of the captioned intervals inside it changes."""
-    keys = operation_keys(intervals)
+    keys = operation_keys(intervals, minor)
     out: List[Tuple[float, float]] = []
     for a, b in segments:
         inside = [(item, key) for item, key in zip(intervals, keys) if a <= (item["start_s"] + item["end_s"]) / 2 < b]
@@ -106,9 +118,10 @@ def split_by_operation(segments: List[Tuple[float, float]], intervals: List[Dict
     return out
 
 
-def join_operations(intervals: List[Dict[str, object]]) -> List[Dict[str, object]]:
-    """Join consecutive intervals of one operation; limb-only motion joins the next operation."""
-    keys = operation_keys(intervals)
+def join_operations(intervals: List[Dict[str, object]],
+                    minor: Callable[[str], bool] = limb_motion) -> List[Dict[str, object]]:
+    """Join consecutive intervals of one operation; ``minor`` captions (limb-only motion) join the next one."""
+    keys = operation_keys(intervals, minor)
     out: List[Dict[str, object]] = []
     for item, key in zip(intervals, keys):
         if out and key == out[-1]["key"]:
@@ -371,8 +384,9 @@ def compare(args) -> int:
                                 for d in runs.values()])
     lines = [f"Episodes: {len(common)} shared by all runs.", "",
              "| Run | Family | Captions | Echo task | Same op. inside / across | Exact join F1 | "
-             "Operation join F1 (pred) | TempSeg + op. split F1 |",
-             "|---|---|---:|---:|---:|---:|---:|---:|"]
+             "Operation join F1 (pred) | TempSeg + op. split F1 | Motion absorbed: same op. inside / across | "
+             "Motion absorbed: op. join F1 (pred) | Motion absorbed: TempSeg + op. split F1 |",
+             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for name, folder in runs.items():
         fams: Dict[str, Dict[str, object]] = {}
         for episode in sorted(common):
@@ -380,24 +394,30 @@ def compare(args) -> int:
             case = kin[episode]
             refs = case["references"]
             phases = rec["rounds"][0]
-            keys = operation_keys(phases)
+            keys, mkeys = operation_keys(phases), operation_keys(phases, motion_only)
             ref_cuts = [r["end_sec"] for r in refs[:-1]]
             f = fams.setdefault(rec["family"], {"captions": 0, "echo": 0, "inside": [0, 0], "across": [0, 0],
-                                                "exact": [], "op": [], "split": []})
+                                                "m_inside": [0, 0], "m_across": [0, 0],
+                                                "exact": [], "op": [], "split": [], "m_op": [], "m_split": []})
             f["captions"] += len(phases)
             f["echo"] += sum(echoes(p["caption"], str(case.get("instruction", ""))) for p in phases)
             for k in range(len(phases) - 1):
                 where = "across" if any(abs(phases[k]["end_s"] - r) <= 0.5 for r in ref_cuts) else "inside"
                 f[where][0] += 1
                 f[where][1] += keys[k] == keys[k + 1]
+                f["m_" + where][0] += 1
+                f["m_" + where][1] += mkeys[k] == mkeys[k + 1]
             items = lambda intervals: {"predictions": [{"start_sec": i["start_s"], "end_sec": i["end_s"]}  # noqa: E731
                                                        for i in intervals], "references": refs}
             f["exact"].append(items(join_equal([dict(p) for p in phases])))
             f["op"].append(items(join_operations(phases)))
+            f["m_op"].append(items(join_operations(phases, motion_only)))
             if args.tempseg:
                 segs = sorted((s["start_s"], s["end_s"]) for s in
                               json.loads((Path(args.tempseg) / f"{episode}.json").read_text())["segments"])
                 f["split"].append(items([dict(start_s=a, end_s=b) for a, b in split_by_operation(segs, phases)]))
+                f["m_split"].append(items([dict(start_s=a, end_s=b)
+                                           for a, b in split_by_operation(segs, phases, motion_only)]))
         for family, f in sorted(fams.items()):
             def f1(cases):
                 if not cases:
@@ -405,10 +425,13 @@ def compare(args) -> int:
                 seg = score_family(cases)["segment@0.75"]
                 return f"{seg['f1']:.3f}"
             op = score_family(f["op"])["segment@0.75"]
+            m_op = score_family(f["m_op"])["segment@0.75"]
             rate = lambda pair: f"{pair[1] / pair[0]:.2f}" if pair[0] else "-"  # noqa: E731
             lines.append(f"| {name} | {family} | {f['captions']} | {f['echo'] / f['captions']:.2f} | "
                          f"{rate(f['inside'])} / {rate(f['across'])} | {f1(f['exact'])} | "
-                         f"{op['f1']:.3f} ({op['n_pred']}/{op['n_ref']}) | {f1(f['split'])} |")
+                         f"{op['f1']:.3f} ({op['n_pred']}/{op['n_ref']}) | {f1(f['split'])} | "
+                         f"{rate(f['m_inside'])} / {rate(f['m_across'])} | "
+                         f"{m_op['f1']:.3f} ({m_op['n_pred']}/{m_op['n_ref']}) | {f1(f['m_split'])} |")
     if args.tempseg:  # the reference points on the same episodes
         from merge import boundaries, gripper_events, split_at_grasps
 

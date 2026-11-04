@@ -212,6 +212,15 @@ def test_operation_join():
     # One TempSeg segment over pick-up and place phases is split where the operation changes.
     assert split_by_operation([(0.2, 7.0)], items) == [(0.2, 4.0), (4.0, 7.0)]
     assert split_by_operation([(0.0, 3.5), (3.5, 7.0)], items) == [(0.0, 3.5), (3.5, 4.0), (4.0, 7.0)]
+    from caption_merge import motion_only
+    # Moving a held object also joins the next operation: pick up | lift, move, put | (retract).
+    caps = ["pick up the pen from the red cup", "lift the pen out of the red cup", "move the pen away from the cup",
+            "put the pen on the table", "move the right hand away from the pen"]
+    items = [dict(start_s=float(k), end_s=float(k + 1), caption=c) for k, c in enumerate(caps)]
+    assert [(j["start_s"], j["end_s"]) for j in join_operations(items)] == [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0),
+                                                                          (3.0, 5.0)]
+    assert [(j["start_s"], j["end_s"], j["key"]) for j in join_operations(items, motion_only)] == [
+        (0.0, 1.0, "pick up"), (1.0, 5.0, "put")]
 
 
 def test_grid_ticks():
