@@ -1,8 +1,11 @@
 # Kinematic segmentation with FLORA: system overview
 
-Status 2026-11-04, branch `kinseg-merge`. This document describes the parts of
-the system, how they connect, what has been tried and what remains to decide.
-Measurements and commands are in [README.md](README.md).
+Status 2026-11-04, branch `kinseg-merge`. This document records the technical
+route of combining autolabel's kinematic segmentation with FLORA: the parts
+(section 2), the route taken, with each direction's hypothesis, evidence and
+conclusion (section 3), how each method works (section 4), the results
+(section 5), and the decisions ahead (section 7). Measurements and commands are
+in [README.md](README.md).
 
 ## 1. Goal
 
@@ -26,7 +29,7 @@ Flora-TempSeg (9B): 16 s windows, 0.5 s output grid, stitched across windows
   → subtask segments (good grouping, coarse boundaries)
   │
   ▼
-[decision: which candidate cuts are subtask boundaries?]      <- the open problem (section 4)
+[decision: which candidate cuts are subtask boundaries?]      <- the open problem (sections 3 and 6)
   │
   ▼
 subtask segments → descriptions (Flora-Captioner 27B, or autolabel's VL describe + aggregation)
@@ -43,7 +46,221 @@ WGO-Bench scoring (autolabel modules/exp_wgo_bench/score.py)
 | **Flora-Rewarder** | video, task | success and quality scores | — | not used yet |
 | **autolabel VL describe + aggregation** | phases, frames, a GPT-class VL model | merged rows with descriptions | already joins phases semantically | never scored on WGO-Bench |
 
-## 3. What has been tried (all 75 episodes unless noted)
+## 3. Technical route
+
+### 3.1 Starting point and framing
+
+The two inputs are complementary. The kinematic phases cut where the robot's
+motion changes, precisely (median 0.3 s from the reference cuts) but 3-6 times
+too often. TempSeg groups the video into subtask-sized segments, at the right
+granularity but with boundaries on a 0.5 s grid and with merged subtasks on
+DROID. Joining the right consecutive phases would give most reference subtasks
+(merge recall@0.75 0.805 on Galaxea, 0.940 on DROID).
+
+So the problem is framed as: **a segmentation is a subset of candidate cuts,
+chosen by a judge.** The perfect-judge ceiling (section 4.6) measures what a
+candidate set allows: 0.728 / 0.729 with our cuts, 0.917 / 0.850 with ours and
+TempSeg's together, against 0.687 / 0.562 for TempSeg alone. The route below is
+the search for that judge, along two directions that differ in who decides.
+
+### 3.2 Direction 1: TempSeg decides, our phases refine ("TempSeg on phases")
+
+**Hypothesis.** TempSeg's grouping is right and only its boundaries are
+imprecise, so moving its boundaries onto our cuts, or letting it choose among
+our cuts, should raise tIoU above 0.75 for more segments.
+
+1. **Combine outputs after TempSeg** (#2 group, #3 snap). Both lowered Galaxea
+   (0.687 → 0.59 / 0.57). Our cuts come every 0.9 s on Galaxea, so the nearest
+   one is often the wrong one. A bound settled the question: moving each
+   TempSeg endpoint to the reference cut itself (within 1 s) reaches only
+   0.788 on Galaxea (0.757 through our cuts) and leaves DROID unchanged.
+   **Boundary precision is worth at most 0.07-0.10 on Galaxea and nothing on
+   DROID; TempSeg's main errors are structural**: on DROID it
+   returns 124 segments for 150 subtasks, often one segment for a
+   pick-and-place.
+2. **Repair the structure with kinematic evidence** (#4 gripper split). A close
+   followed by an open of the same arm inside one segment marks an acquisition
+   and a delivery; splitting there at our cut gave the best result so far,
+   0.690 / 0.581. It is a rule: a failed grasp, a push with a closed gripper or
+   a tool use breaks it.
+3. **Let TempSeg choose among our cuts** (#5 constrained decoding). TempSeg
+   kept deciding how many segments there are, but each endpoint had to be one
+   of our cuts, chosen by its own probability. It fell to 0.498 / 0.317. The
+   cause is TempSeg's output vocabulary: 88 % of the ticks it writes are
+   multiples of 10 (a 0.5 s grid), so an off-grid cut such as tick 137 has no
+   meaningful probability, and window edges (all on the grid) won 63 % of the
+   choices.
+4. **Read TempSeg's judgement at our cuts instead of forcing it** (#6 grid
+   beliefs). With decoding left free, its probability over the grid is
+   concentrated on its own choice (for example 92 % on one grid point, 6 % on
+   the next), so it says nothing about cuts it did not consider; merging by
+   these beliefs reached 0.416 / 0.356.
+
+**Conclusion.** TempSeg cannot be made to judge our cuts without retraining.
+Its value is its grouping; our cuts and gripper events can repair it only
+through targeted rules.
+
+### 3.3 Direction 2: our phases first, a model judges each join ("Captioner per phase")
+
+**Hypothesis.** A model that understands manipulation can tell, for two
+neighbouring phases, whether they belong to the same subtask (the "give it two
+segments and ask whether they do the same thing" idea). Our phases then
+provide precise boundaries and the model the grouping; the ceiling says a good
+judge would reach about 0.73 on our cuts and 0.92 / 0.85 with TempSeg's.
+
+1. **A general 9B vision-language judge** (#7). Asked "same operation?" about
+   the 3 s before and after each cut, in three phrasings, with and without the
+   task instruction, at two frame sizes: AUC 0.39-0.61, chance. The model
+   misread objects (DROID's bowl became "chopsticks" and "a cable") and counted
+   an approach and the grasp that follows it as two operations.
+2. **A robot-trained describer, Flora-Captioner, on every phase** (#8, #9).
+   Joining identical captions joined almost nothing (421 segments for 123
+   subtasks on Galaxea). Joining by operation (the leading verb) reached
+   0.303 / 0.120. The captions do carry the signal: neighbouring phases share
+   an operation in 68 % (Galaxea) and 55 % (DROID) of the pairs inside one
+   subtask and in 40 % / 29 % of the pairs across a reference cut. But the
+   signal is too noisy. The Captioner is trained on whole subtasks, and on
+   0.5-2 s phases it describes the fragment ("hold", "lift", "move toward");
+   without the instruction it misreads DROID's small objects, and with the
+   instruction it repeats the task sentence for most phases.
+3. **The Captioner's operations as a repair of TempSeg** (#10): splitting
+   TempSeg's segments where the operation changes over-split them (0.320 /
+   0.128); the same noise.
+4. **Consistency captioning** (implemented, not yet measured). Each phase is
+   captioned with the previous phase's caption given as context and a request
+   to repeat it when the operation continues, aimed at the wording drift seen
+   in step 2.
+
+**Conclusion so far.** These models judge reliably at the scale they were
+trained on, whole subtasks, and not on fragments; asking about fragments was
+the common failure of direction 2 and of steps 3-4 of direction 1.
+
+### 3.4 Lessons that shape the next step
+
+1. The candidate cuts are not the bottleneck; the judge is.
+2. TempSeg's grouping is the strongest judge available; it errs mainly by
+   merging (DROID) and slightly by splitting (Galaxea, 136 for 123).
+3. A model should be asked about **subtask-sized** spans, the scale it was
+   trained on, and our cuts used for where to cut, not as units to describe.
+4. Kinematic evidence (gripper events) points to where TempSeg merged
+   subtasks, but alone it is a rule; it needs a model to confirm it.
+
+These point to routes such as: keep TempSeg's segments, use our cuts and
+gripper events to propose splits (and neighbouring segments to propose
+merges), and confirm each with the Captioner on the subtask-sized halves or
+unions; or train a judge with keep/drop labels from other annotated datasets;
+or let a person answer the keep/drop questions. Section 7 lists them as
+decisions.
+
+## 4. Method details
+
+### 4.1 Terms
+
+- **Phase**: an activity phase of autolabel's kinematic segmentation, the
+  interval between two consecutive changes of robot motion (arm direction,
+  arm activity, base or torso activity). Phases tile the episode.
+- **Our cuts**: the internal phase boundaries. **TempSeg cuts**: the start and
+  end times of TempSeg's stitched segments. **Candidate cuts**: either or both.
+- **Gripper events**: closes and opens detected by autolabel, from the
+  measured finger opening (Galaxea) or the binary command (DROID).
+- **Window ticks**: TempSeg sees 16 s windows (12 s core plus 2 s guards) at
+  4 Hz and writes each segment as integer ticks of 0.05 s from the window start,
+  in practice multiples of 10 ticks (a 0.5 s grid).
+- **Joining across a cut**: removing the cut, so the phases on both sides
+  become one interval. Every method below ends by choosing which candidate cuts
+  to keep; the intervals between kept cuts are the prediction.
+
+### 4.2 Where each method connects the two
+
+```text
+kinematics ─► phases, our cuts, gripper events ───────────────┐
+                                                              ├─► A. after TempSeg: combine outputs (#2-#4)
+video ─► TempSeg windows ─► replies ─► stitching ─► segments ─┘
+              ▲               │
+              │               └─► B2. read TempSeg's grid probabilities at our cuts (#6)
+              └─ B1. TempSeg may only write our cut ticks (#5)
+
+candidate cuts (ours ∪ TempSeg's) ─► C. another model judges each cut (#7-#10) ─► kept cuts ─► segments
+```
+
+### 4.3 A. Combining outputs after TempSeg (`merge.py`)
+
+TempSeg runs unchanged; its segments and our phases are combined
+geometrically.
+
+- **#2 group.** Each phase is assigned to the TempSeg segment it overlaps
+  most; a phase overlapping none takes its predecessor's segment. Consecutive
+  phases with the same segment are joined. Result: TempSeg's grouping with our
+  boundaries.
+- **#3 snap@d.** Each TempSeg endpoint moves to our nearest cut (or episode
+  edge) when one lies within `d` seconds (0.5 s or 1 s); an endpoint without
+  one stays. Result: TempSeg's segments with our boundary precision.
+- **#4 gripper split.** Inside each TempSeg segment, look for a close of one
+  arm followed by an open of the same arm (an acquisition and a delivery, which
+  TempSeg's own policy keeps distinct). If found, split the segment at our
+  first cut after the close (`split-first`) or at our cut nearest the middle
+  between close and open (`split-mid`), then repeat on the remainder. Result:
+  pick-and-places that TempSeg returned as one segment are split.
+
+### 4.4 B. Changing or reading TempSeg's decoding (`segment.py`, `decoding.py`, `beliefs.py`)
+
+TempSeg writes each segment as JSON (`{"s":40,"e":160,"lo":false,"ro":false}`),
+one token at a time, numbers digit by digit. Our own greedy decoding loop
+reproduces TempSeg's replies token for token (`check_decoding.py`), so changes
+to it affect nothing else; windows, prompts and stitching stay FLORA's.
+
+- **#5 constrained decoding.** For each window, the allowed values are the
+  window ticks of our cuts plus the window's edges. At every `"s":` or `"e":`
+  the loop scores each allowed value as a whole number, log P(digits) plus the
+  log-probability that the number ends there, in one batched forward pass from
+  a copy of the model's cache, and writes the best (a start not before the
+  previous row's start, an end after its start). TempSeg still decides how many
+  segments there are; only their endpoints are forced onto our cuts. (A first
+  version chose digits one at a time and could complete a number far from the
+  one the model began, e.g. `"s":320` with `"e":161`.)
+- **#6 grid beliefs.** Decoding stays free (replies unchanged); at every
+  `"s":`/`"e":` the loop records the probability of every value on TempSeg's
+  0.5 s grid in the window. Each of our cuts gets the largest probability any
+  prediction puts on its nearest grid point (within 0.25 s), excluding the
+  window's visible edges, which mean "continues beyond this window". Cuts at or
+  above a threshold are kept and the phases are joined across the rest.
+
+### 4.5 C. Another model judges each cut (`judge.py`, `caption_merge.py`)
+
+- **#7 9B judge.** Candidates are our cuts and TempSeg's, merged when closer
+  than 0.05 s. For each cut `c`, Qwen3.5-9B (TempSeg's base model, without its
+  adapter) sees the main camera at 4 Hz and is asked, with the granularity
+  wording of TempSeg's prompt, in one of three ways: two 3 s clips before and
+  after `c`, "same operation?" (`pair`); one 6 s clip, "does a new operation
+  start at 3.0 s?" (`single`); or name both operations, then "Same or New"
+  (`describe`). The score is the probability of the "new operation" answer
+  token; cuts at or above a threshold are kept. Variants added the task
+  instruction and larger frames (400 k instead of 160 k pixels).
+- **#8, #9 Captioner on phases.** Every phase is captioned by Flora-Captioner
+  as its own target interval, with the neighbouring phases as before/after
+  context (FLORA's caption sampling: target 8-40 frames at 8 fps, context 4-12
+  frames), optionally with the episode instruction. Consecutive phases are then
+  joined when their captions are identical after normalisation (#8: lower
+  case, no punctuation or articles), or when they share an operation (#9: the
+  leading verb phrase, e.g. "pick up", "place"; a caption that only moves a hand
+  or arm, an approach or retreat, takes the next phase's operation).
+- **#10 TempSeg + operation split.** TempSeg's segments are kept, and each is
+  split at our cuts where the Captioner's operation of the phases inside it
+  changes.
+- **Consistency captioning** (implemented, not yet measured). Phases are
+  captioned in order, and the episode-instruction field, the Captioner's one
+  optional text input, carries the previous phase's caption with a request to
+  repeat it exactly when the operation continues; identical captions are then
+  joined.
+
+### 4.6 D. The perfect-judge ceiling (from the references, not a method)
+
+For each reference cut, the candidate cut nearest to it within 0.5 s is kept;
+all others are dropped, and the intervals between kept cuts are scored. It
+measures how good a candidate set is, independent of the judge, and is the
+target the judges in C aim at.
+
+## 5. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
 |---|---|---:|---:|---|
@@ -64,18 +281,19 @@ nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
 0.741 / 0.374 with TempSeg's, and **0.917 / 0.850 with both**. The boundaries
 are available; choosing them is the problem.
 
-## 4. Diagnosis
+## 6. Where we stand
 
-1. The candidate cuts are good: together, ours and TempSeg's contain almost
-   every reference boundary (94 of 98 on Galaxea, 80 of 100 on DROID, within
-   0.5 s).
-2. The decision of which cuts to keep is the bottleneck. TempSeg makes it well
-   at its own granularity; nothing tried so far makes it better.
-3. The released FLORA models, and an untrained 9B model, are reliable on
-   subtask-sized intervals but not on 0.5-2 s fragments: approaches 5-10 all
-   ask them about fragments.
+- **Best combination**: TempSeg + gripper split, 0.690 / 0.581 (TempSeg alone
+  0.687 / 0.562).
+- **Room**: the perfect judge on ours and TempSeg's cuts, 0.917 / 0.850; the
+  two candidate sets together contain almost every reference cut (94 of 98 on
+  Galaxea, 80 of 100 on DROID, within 0.5 s).
+- **Closed**: both directions as tried (section 3): TempSeg cannot be made to
+  judge our cuts, and the released models do not judge fragments.
+- **Open, implemented but not measured**: consistency captioning (3.3, step 4).
+- **Nothing is running.** Next steps wait for the decisions in section 7.
 
-## 5. Open questions
+## 7. Open questions
 
 - **Q1 Product.** Subtask segments only, or segments with instructions? For
   WGO-Bench only, or also Galaxea Open-World and our own three-camera,
@@ -98,7 +316,7 @@ are available; choosing them is the problem.
   setting) or autolabel's VL pipeline writes the instructions; how are they
   scored (WGO's caption protocol is not implemented yet)?
 
-## 6. Infrastructure
+## 8. Infrastructure
 
 - **Local**: H20 GPUs, conda env `flora`; TempSeg weights in
   `~/.cache/flora/models` and the Hugging Face cache.
@@ -124,7 +342,7 @@ are available; choosing them is the problem.
   - The link to the server limits each connection to about 44 KB/s
     (`push --parallel`).
 
-## 7. Files
+## 9. Files
 
 | File | Role |
 |---|---|
