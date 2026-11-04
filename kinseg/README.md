@@ -1,5 +1,8 @@
 # Kinematic segmentation with Flora-TempSeg
 
+For the overall picture (components, everything tried, diagnosis and open
+questions) see [SYSTEM.md](SYSTEM.md); this file holds the details.
+
 Exploration of combining autolabel's kinematic activity phases
 (`manip/prep/autolabel`) with Flora-TempSeg, scored on the robot episodes of
 WGO-Bench with autolabel's scorer (`modules/exp_wgo_bench/score.py`, the
