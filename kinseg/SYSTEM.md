@@ -109,11 +109,20 @@ are available; choosing them is the problem.
   checkout someone changed.
 - **Throughput**: TempSeg 3-6 s per 16 s window on the remote; Captioner about
   3.6 s per caption (about 85 min for all 1,422 phases on one worker).
-- **Known issues**: the remote GPUs are shared and can fill up during a run;
-  `/cfs` is Lustre and the first read of an idle weight file rewrites its
-  timestamps (probably tiered storage), which trips FLORA's integrity check
-  once (`local_models.load` retries that failure only); the link to the server
-  limits each connection to about 44 KB/s (`push --parallel`).
+- **Known issues and their handling**:
+  - `/cfs` is Lustre, and the first read of an idle weight file rewrites its
+    timestamps (probably tiered storage), which trips FLORA's integrity check.
+    `local_models.load` first reads every checked file and waits until the
+    timestamps stay unchanged for 30 s (101.9 GiB of Captioner in 43 s), then
+    loads; the timestamp failure alone is retried as a backstop.
+  - The remote GPUs are shared with other users. `flora-remote run --gpus
+    auto:N[:GiB]` picks the N GPUs with the most free memory, and the job waits
+    up to an hour for the memory it needs (22 GiB for TempSeg or the 9B judge,
+    62 GiB spread over the GPUs for the Captioner) instead of failing half-way.
+    Dedicated GPUs need `ticli worker launch`.
+  - Runs skip episodes whose results exist, so a relaunch resumes.
+  - The link to the server limits each connection to about 44 KB/s
+    (`push --parallel`).
 
 ## 7. Files
 
