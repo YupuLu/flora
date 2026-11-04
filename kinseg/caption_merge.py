@@ -129,6 +129,47 @@ def tiles(cuts: List[float], start: float, end: float) -> List[Dict[str, object]
     return [dict(start_s=a, end_s=b, members=[k]) for k, (a, b) in enumerate(zip(edges[:-1], edges[1:]))]
 
 
+def robot_state(case: Dict[str, object], start_s: float, end_s: float) -> str:
+    """Gripper state at the start of [start_s, end_s), its gripper events and moving arms, in words.
+
+    From the kinematic prediction: a gripper is closed after its last close before ``start_s`` (each
+    gripper starts open; every recorded episode's first event is a close). A robot whose phases and
+    events name only the right arm is described as one arm ("the gripper").
+    """
+    from merge import gripper_events
+
+    events = gripper_events(case)
+    phases = case["predictions"]
+    bimanual = any(p["arm"] in ("LEFT", "BOTH") for p in phases) or any(e[0] == "LEFT" for e in events)
+    arms = ("LEFT", "RIGHT") if bimanual else ("RIGHT",)
+
+    def name(arm: str, part: str) -> str:
+        return f"the {arm.lower()} {part}" if bimanual else f"the {part}"
+
+    def listed(items: List[str]) -> str:
+        return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+    states = []
+    for arm in arms:
+        before = [kind for a, kind, t0, _ in events if a == arm and t0 < start_s]
+        states.append(f"{name(arm, 'gripper')} is {'closed' if before and before[-1] == 'close' else 'open'}")
+    during = [f"{name(a, 'gripper')} {'closes' if kind == 'close' else 'opens'}"
+              for a, kind, t0, _ in events if a in arms and start_s <= t0 < end_s]
+    moving = set()
+    for p in phases:
+        if p["start_sec"] < end_s and p["end_sec"] > start_s and p["arm"] != "STABLE":
+            moving |= set(arms) if p["arm"] == "BOTH" else {p["arm"]} & set(arms)
+    if not moving:
+        motion = "Neither arm moves much." if bimanual else "The arm hardly moves."
+    elif len(moving) == 2:
+        motion = "Both arms move."
+    else:
+        motion = name(moving.pop(), "arm").capitalize() + " moves."
+    return " ".join([f"At the start of TARGET {listed(states)}.",
+                     f"During TARGET {listed(during)}." if during else "No gripper opens or closes during TARGET.",
+                     motion])
+
+
 def initial_intervals(case: Dict[str, object], tempseg: Optional[Dict[str, object]]) -> List[Dict[str, object]]:
     phases = [(p["start_sec"], p["end_sec"]) for p in case["predictions"]]
     cuts = [e for _, e in phases[:-1]]
@@ -148,7 +189,7 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
                    context: str = "both") -> Dict[int, Dict[str, str]]:
     """FLORA's caption_single for ``segments[k]``, ``k`` in ``todo``, with context from the full list.
 
-    ``text_for(k, previous_caption)`` gives the episode-instruction text of interval ``k`` (empty for
+    ``text_for(k, previous_caption, segment)`` gives the episode-instruction text of interval ``k`` (empty for
     none); intervals are captioned in order, so the previous caption is the one just written (or the
     stored one when ``k - 1`` is not captioned this round). ``context`` chooses which of FLORA's
     BEFORE/TARGET/AFTER video blocks are sent; FLORA's prompt lists exactly the blocks sent.
@@ -178,7 +219,7 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
         for plan in sorted(plans, key=lambda p: p["event_index"]):
             k = plan["event_index"]
             previous = (out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")) if k else ""
-            text_instruction = text_for(k, previous)
+            text_instruction = text_for(k, previous, segments[k])
             plan = dict(plan, blocks=[b for b in plan["blocks"] if b["role"] in roles])
             sample = pipeline.a.caption_sample(plan, receipts, ["main"])
             if text_instruction.strip():
@@ -200,14 +241,16 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
 
 
 def episode_text(args, case: Dict[str, object], scene: Optional[Dict[str, object]]):
-    """``text_for(k, previous)`` for one episode, from --background / --instruction / --previous."""
+    """``text_for(k, previous, segment)`` for one episode, from --background / --instruction / --previous /
+    --robot-state."""
     import background
 
     task = str(case.get("instruction", ""))
     if args.instruction:  # FLORA's plain episode instruction: the task sentence alone
-        return lambda k, previous: task
-    def text_for(k: int, previous: str) -> str:
-        return background.background_text(args.background, task, scene, previous if args.previous else "")
+        return lambda k, previous, segment: task
+    def text_for(k: int, previous: str, segment: Dict[str, float]) -> str:
+        robot = robot_state(case, segment["start_s"], segment["end_s"]) if args.robot_state else ""
+        return background.background_text(args.background, task, scene, previous if args.previous else "", robot)
     return text_for
 
 
@@ -261,7 +304,7 @@ def run(args) -> int:
             intervals = joined
         record = dict(id=episode, family=case["family"], cuts=args.cuts, task=case.get("instruction", ""),
                       plain_instruction=args.instruction, background=args.background, context=args.context,
-                      previous=args.previous, rounds=rounds,
+                      previous=args.previous, robot_state=args.robot_state, rounds=rounds,
                       final=[dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in
                              join_equal(intervals)],
                       elapsed_s=round(time.monotonic() - started, 1))
@@ -394,6 +437,8 @@ def main(argv=None) -> int:
     r.add_argument("--rounds", type=int, default=3)
     r.add_argument("--previous", action="store_true",
                    help="add the previous interval's caption to the background, for consistent names only")
+    r.add_argument("--robot-state", action="store_true",
+                   help="add TARGET's gripper state and moving arms from the kinematics to the background")
     r.add_argument("--overwrite", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))

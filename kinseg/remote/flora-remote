@@ -9,6 +9,7 @@
 #   FLORA_REMOTE_PYTHON        Python of the remote environment
 #   FLORA_REMOTE_PROXY         HTTP proxy the remote needs for GitHub (optional)
 #   FLORA_REMOTE_LOCAL_MODELS  module with configure_local_models() (optional; see kinseg/local_models.py)
+#   FLORA_REMOTE_WORKER_FLAGS  ticli flags every launch uses, e.g. --gpu-type, --notebook_id, --pubkey (optional)
 #
 # Commands:
 #   sync                                push this branch, then fast-forward the remote checkout to it
@@ -24,7 +25,10 @@
 #                                       it with its log in $FLORA_REMOTE_DATA/logs/NAME.log
 #   log NAME [LINES]                    end of a background run's log
 #   status                              GPU memory and ticli workers
-#   launch TICLI_FLAGS... -- CMD...     start a ticli worker pod running CMD in the same environment
+#   launch [--log NAME] TICLI_FLAGS... -- CMD...
+#                                       start a ticli worker pod running CMD in the same environment
+#                                       (the parent notebook must have its Worker feature enabled);
+#                                       --log writes its output to $FLORA_REMOTE_DATA/logs/NAME.log
 #   shell                               interactive SSH session
 #
 # The remote account is shared, so this script never deletes anything there:
@@ -196,13 +200,20 @@ cmd_status() {
 }
 
 cmd_launch() {
-  local flags=()
-  while [[ $# -gt 0 && "$1" != "--" ]]; do flags+=("$1"); shift; done
+  local flags=() log=""
+  read -r -a flags <<< "${FLORA_REMOTE_WORKER_FLAGS:-}"
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    if [[ "$1" == "--log" ]]; then log="$2"; shift 2; continue; fi
+    flags+=("$1"); shift
+  done
   [[ "${1:-}" == "--" ]] && shift
-  [[ $# -gt 0 ]] || die "usage: launch TICLI_FLAGS... -- CMD..."
-  local inner
-  inner="$(env_prefix) && $(remote_guard) && $(join_q "$@")"
-  remote "$(env_prefix) && $(remote_guard) && ticli worker launch $(join_q "${flags[@]}") bash -lc $(q "$inner")"
+  [[ $# -gt 0 ]] || die "usage: launch [--log NAME] TICLI_FLAGS... -- CMD..."
+  # No proxy: the TIONE API refuses requests through it, and a worker has no proxy on its localhost.
+  local inner noproxy="unset https_proxy http_proxy"
+  inner="$(env_prefix) && $noproxy && $(remote_guard) && $(join_q "$@")"
+  [[ -n "$log" ]] && inner="{ $inner; } > $(q "$FLORA_REMOTE_DATA/logs/$log.log") 2>&1"
+  # ticli takes the worker's command after "--"; without it, the command's own flags are read as ticli's.
+  remote "$(env_prefix) && $noproxy && $(remote_guard) && ticli worker launch $(join_q "${flags[@]}") -- bash -c $(q "$inner")"
 }
 
 cmd_shell() { exec ssh -t -p "${FLORA_REMOTE_PORT:-22}" "$FLORA_REMOTE"; }

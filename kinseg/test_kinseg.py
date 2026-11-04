@@ -155,6 +155,31 @@ def test_background_text():
         background_text("task_brief", "x" * 2000)
 
 
+def test_robot_state():
+    from background import ROBOT_GUIDANCE, background_text
+    from caption_merge import robot_state
+
+    def event(arm, kind, t):
+        return dict(arm=arm, kind=kind, start_sec=t, end_sec=t + 0.2, source="measured")
+
+    two_arms = {"predictions": [
+        dict(start_sec=0, end_sec=2, arm="RIGHT", gripper_events=[event("RIGHT", "close", 1.5)]),
+        dict(start_sec=2, end_sec=4, arm="BOTH", gripper_events=[event("LEFT", "close", 3.0)]),
+        dict(start_sec=4, end_sec=6, arm="STABLE", gripper_events=[event("RIGHT", "open", 5.0)])]}
+    assert robot_state(two_arms, 0, 2) == ("At the start of TARGET the left gripper is open and the right gripper "
+                                           "is open. During TARGET the right gripper closes. The right arm moves.")
+    assert robot_state(two_arms, 2, 4).endswith("During TARGET the left gripper closes. Both arms move.")
+    assert robot_state(two_arms, 4, 6) == ("At the start of TARGET the left gripper is closed and the right gripper "
+                                           "is closed. During TARGET the right gripper opens. Neither arm moves much.")
+    one_arm = {"predictions": [dict(start_sec=0, end_sec=2, arm="RIGHT", gripper_events=[event("RIGHT", "close", 1.0)]),
+                               dict(start_sec=2, end_sec=3, arm="STABLE", gripper_events=[])]}
+    assert robot_state(one_arm, 2, 3) == ("At the start of TARGET the gripper is closed. "
+                                          "No gripper opens or closes during TARGET. The arm hardly moves.")
+    text = background_text("task_brief", "Put the cup on the tray", robot=robot_state(one_arm, 2, 3))
+    assert "\nRobot state from kinematics: At the start of TARGET the gripper is closed." in text
+    assert text.endswith(ROBOT_GUIDANCE)
+
+
 def test_echoes():
     from caption_merge import echoes
 
