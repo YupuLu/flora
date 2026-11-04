@@ -140,29 +140,25 @@ def initial_intervals(case: Dict[str, object], tempseg: Optional[Dict[str, objec
 # ── GPU part ───────────────────────────────────────────────────────────
 
 
-CONSISTENCY = ('Previous interval: "{previous}". If this interval continues the same operation, repeat that '
-               'caption exactly; otherwise write the caption of the new operation.')
+CONTEXT_ROLES = {"both": ("BEFORE", "TARGET", "AFTER"), "before": ("BEFORE", "TARGET"),
+                 "after": ("TARGET", "AFTER"), "none": ("TARGET",)}
 
 
-def consistency_instruction(task: str, previous: str) -> str:
-    """Episode-instruction text giving the previous interval's caption and asking for consistent wording."""
-    lead = f"Task: {task.strip()} " if task.strip() else ""
-    return lead + CONSISTENCY.format(previous=previous.strip())
-
-
-def caption_subset(pipeline, videos, segments, todo, profile, session, instruction,
-                   previous_context: bool = False) -> Dict[int, Dict[str, str]]:
+def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
+                   context: str = "both") -> Dict[int, Dict[str, str]]:
     """FLORA's caption_single for ``segments[k]``, ``k`` in ``todo``, with context from the full list.
 
-    With ``previous_context``, intervals are captioned in order and each gets the previous interval's
-    caption in the episode-instruction field (the Captioner's one optional text input), with a request
-    to repeat it when the operation continues.
+    ``text_for(k, previous_caption)`` gives the episode-instruction text of interval ``k`` (empty for
+    none); intervals are captioned in order, so the previous caption is the one just written (or the
+    stored one when ``k - 1`` is not captioned this round). ``context`` chooses which of FLORA's
+    BEFORE/TARGET/AFTER video blocks are sent; FLORA's prompt lists exactly the blocks sent.
     """
     import hashlib
     import tempfile
     from flora_unified.unified_input import processor_inputs, prompt as native_prompt
     from transformers.video_utils import VideoMetadata
 
+    roles = CONTEXT_ROLES[context]
     plans, dispositions = pipeline.single_plans(videos, segments, profile)
     out = {d["event_index"]: dict(caption="", status=d["status"]) for d in dispositions if d["event_index"] in todo}
     plans = [p for p in plans if p["event_index"] in todo]
@@ -171,7 +167,8 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, instructi
     model, proc = session.load("captioner")
     with tempfile.TemporaryDirectory(prefix="kinseg-frames-") as temporary:
         root = Path(temporary)
-        wanted = {i for plan in plans for block in plan["blocks"] for i in block["frame_indices"]}
+        wanted = {i for plan in plans for block in plan["blocks"] if block["role"] in roles
+                  for i in block["frame_indices"]}
         receipts = {}
         for i, image in pipeline.frames_for(videos, wanted).items():
             path = root / f"{i:012d}.png"
@@ -180,11 +177,9 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, instructi
                                size=list(image.size))
         for plan in sorted(plans, key=lambda p: p["event_index"]):
             k = plan["event_index"]
-            text_instruction = instruction
-            if previous_context and k > 0:
-                previous = out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")
-                if previous:
-                    text_instruction = consistency_instruction(instruction, previous)
+            previous = (out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")) if k else ""
+            text_instruction = text_for(k, previous)
+            plan = dict(plan, blocks=[b for b in plan["blocks"] if b["role"] in roles])
             sample = pipeline.a.caption_sample(plan, receipts, ["main"])
             if text_instruction.strip():
                 from flora_unified.unified_input import load_frames
@@ -199,8 +194,21 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, instructi
                               return_metadata=True, return_tensors="pt")
             else:
                 inputs, _, _ = processor_inputs(sample, root, proc)
-            out[plan["event_index"]] = dict(caption=pipeline.generate(model, proc, inputs, 512), status="complete")
+            out[k] = dict(caption=pipeline.generate(model, proc, inputs, 512), status="complete",
+                          instruction_text=text_instruction)
     return out
+
+
+def episode_text(args, case: Dict[str, object], scene: Optional[Dict[str, object]]):
+    """``text_for(k, previous)`` for one episode, from --background / --instruction / --previous."""
+    import background
+
+    task = str(case.get("instruction", ""))
+    if args.instruction:  # FLORA's plain episode instruction: the task sentence alone
+        return lambda k, previous: task
+    def text_for(k: int, previous: str) -> str:
+        return background.background_text(args.background, task, scene, previous if args.previous else "")
+    return text_for
 
 
 def run(args) -> int:
@@ -225,9 +233,11 @@ def run(args) -> int:
             continue
         case = json.loads(kin[episode].read_text())
         tempseg = json.loads((Path(args.tempseg) / f"{episode}.json").read_text()) if args.cuts == "union" else None
-        instruction = case.get("instruction", "") if args.instruction else ""
+        scene = (json.loads((Path(args.scenes) / f"{episode}.json").read_text())
+                 if args.scenes and (Path(args.scenes) / f"{episode}.json").exists() else None)
+        text_for = episode_text(args, case, scene)
         videos, _ = engine._inputs(str(Path(args.videos) / f"{episode}.mp4"), PROFILES[args.profile], None, None,
-                                   False, instruction)
+                                   False, "")
         intervals = initial_intervals(case, tempseg)
         for item in intervals:
             item["status"], item["caption"] = None, ""
@@ -236,19 +246,22 @@ def run(args) -> int:
             todo = {k for k, item in enumerate(intervals) if item["status"] is None or item.get("joined")}
             rows = caption_subset(pipeline, videos,
                                   [dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in intervals],
-                                  todo, PROFILES[args.profile], session, instruction, args.previous)
+                                  todo, PROFILES[args.profile], session, text_for, args.context)
             for k, row in rows.items():
-                intervals[k].update(caption=row["caption"], status=row["status"], joined=False)
+                intervals[k].update(caption=row["caption"], status=row["status"], joined=False,
+                                    instruction_text=row.get("instruction_text", ""))
             rounds.append([dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"], status=i["status"],
-                                members=i["members"]) for i in intervals])
+                                members=i["members"], instruction_text=i.get("instruction_text", ""))
+                           for i in intervals])
             joined = join_equal(intervals)
             print(f"{episode} round {r + 1}: {len(todo)} captioned, {len(intervals)} -> {len(joined)} intervals",
                   flush=True)
             if len(joined) == len(intervals):
                 break
             intervals = joined
-        record = dict(id=episode, family=case["family"], cuts=args.cuts, instruction=instruction,
-                      previous_context=args.previous, rounds=rounds,
+        record = dict(id=episode, family=case["family"], cuts=args.cuts, task=case.get("instruction", ""),
+                      plain_instruction=args.instruction, background=args.background, context=args.context,
+                      previous=args.previous, rounds=rounds,
                       final=[dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in
                              join_equal(intervals)],
                       elapsed_s=round(time.monotonic() - started, 1))
@@ -297,6 +310,69 @@ def score(args) -> int:
     return 0
 
 
+def echoes(caption: str, task: str, threshold: float = 0.8) -> bool:
+    """A caption that repeats the task brief: it contains at least ``threshold`` of the brief's words."""
+    a, b = set(normalise(caption).split()), set(normalise(task).split())
+    return bool(a) and len(b) >= 3 and len(a & b) / len(b) >= threshold
+
+
+def compare(args) -> int:
+    """One table for several caption runs on the episodes they share."""
+    from merge import scorer
+
+    score_family = scorer(Path(args.autolabel))
+    kin = {json.loads(p.read_text())["id"]: json.loads(p.read_text())
+           for p in Path(args.kinematic).glob("predictions/*/*.json")}
+    runs = dict(item.split("=", 1) for item in args.runs)
+    common = set.intersection(*[{p.stem for p in Path(d).glob("*.json") if p.name != "score.json"}
+                                for d in runs.values()])
+    lines = [f"Episodes: {len(common)} shared by all runs.", "",
+             "| Run | Family | Captions | Echo task | Same op. inside / across | Exact join F1 | "
+             "Operation join F1 (pred) | TempSeg + op. split F1 |",
+             "|---|---|---:|---:|---:|---:|---:|---:|"]
+    for name, folder in runs.items():
+        fams: Dict[str, Dict[str, object]] = {}
+        for episode in sorted(common):
+            rec = json.loads((Path(folder) / f"{episode}.json").read_text())
+            case = kin[episode]
+            refs = case["references"]
+            phases = rec["rounds"][0]
+            keys = operation_keys(phases)
+            ref_cuts = [r["end_sec"] for r in refs[:-1]]
+            f = fams.setdefault(rec["family"], {"captions": 0, "echo": 0, "inside": [0, 0], "across": [0, 0],
+                                                "exact": [], "op": [], "split": []})
+            f["captions"] += len(phases)
+            f["echo"] += sum(echoes(p["caption"], str(case.get("instruction", ""))) for p in phases)
+            for k in range(len(phases) - 1):
+                where = "across" if any(abs(phases[k]["end_s"] - r) <= 0.5 for r in ref_cuts) else "inside"
+                f[where][0] += 1
+                f[where][1] += keys[k] == keys[k + 1]
+            items = lambda intervals: {"predictions": [{"start_sec": i["start_s"], "end_sec": i["end_s"]}  # noqa: E731
+                                                       for i in intervals], "references": refs}
+            f["exact"].append(items(join_equal([dict(p) for p in phases])))
+            f["op"].append(items(join_operations(phases)))
+            if args.tempseg:
+                segs = sorted((s["start_s"], s["end_s"]) for s in
+                              json.loads((Path(args.tempseg) / f"{episode}.json").read_text())["segments"])
+                f["split"].append(items([dict(start_s=a, end_s=b) for a, b in split_by_operation(segs, phases)]))
+        for family, f in sorted(fams.items()):
+            def f1(cases):
+                if not cases:
+                    return "-"
+                seg = score_family(cases)["segment@0.75"]
+                return f"{seg['f1']:.3f}"
+            op = score_family(f["op"])["segment@0.75"]
+            rate = lambda pair: f"{pair[1] / pair[0]:.2f}" if pair[0] else "-"  # noqa: E731
+            lines.append(f"| {name} | {family} | {f['captions']} | {f['echo'] / f['captions']:.2f} | "
+                         f"{rate(f['inside'])} / {rate(f['across'])} | {f1(f['exact'])} | "
+                         f"{op['f1']:.3f} ({op['n_pred']}/{op['n_ref']}) | {f1(f['split'])} |")
+    text = "\n".join(lines)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
@@ -308,22 +384,34 @@ def main(argv=None) -> int:
     r.add_argument("--cuts", choices=("ours", "union"), default="ours")
     r.add_argument("--tempseg", help="segment.py output dir, for --cuts union")
     r.add_argument("--profile", default="yam")
-    r.add_argument("--instruction", action="store_true", help="give the episode's task instruction to the Captioner")
+    r.add_argument("--instruction", action="store_true",
+                   help="FLORA's plain episode instruction: the task sentence alone (overrides --background)")
+    r.add_argument("--background", choices=("none", "task_brief", "scene_context", "task_and_scene"),
+                   default="none", help="background text in the workspace template (kinseg/background.py)")
+    r.add_argument("--scenes", help="folder of <episode>.json with target_objects/other_objects/workspace")
+    r.add_argument("--context", choices=("both", "before", "after", "none"), default="both",
+                   help="which BEFORE/AFTER video blocks around TARGET are sent")
     r.add_argument("--rounds", type=int, default=3)
     r.add_argument("--previous", action="store_true",
-                   help="caption in order, giving each interval the previous caption and asking for consistent wording")
+                   help="add the previous interval's caption to the background, for consistent names only")
     r.add_argument("--overwrite", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
     s.add_argument("--kinematic", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--tempseg", help="segment.py output dir: also score TempSeg split where the operation changes")
+    c = sub.add_parser("compare", help="one table for several runs on their shared episodes")
+    c.add_argument("--runs", nargs="+", required=True, help="NAME=DIR caption run folders")
+    c.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
+    c.add_argument("--kinematic", required=True)
+    c.add_argument("--tempseg", help="segment.py output dir: also score TempSeg split by operation")
+    c.add_argument("--out", help="write the table here")
     args = ap.parse_args(argv)
     if args.command == "run" and args.cuts == "union" and not args.tempseg:
         ap.error("--cuts union needs --tempseg")
-    if args.command == "score" and not args.autolabel:
+    if args.command in ("score", "compare") and not args.autolabel:
         ap.error("give --autolabel or set AUTOLABEL_ROOT")
-    return run(args) if args.command == "run" else score(args)
+    return {"run": run, "score": score, "compare": compare}[args.command](args)
 
 
 if __name__ == "__main__":

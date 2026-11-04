@@ -116,13 +116,38 @@ def test_load_retries_only_the_warming_failure(monkeypatch):
     assert corrupt.calls == 1
 
 
-def test_consistency_instruction():
-    from caption_merge import consistency_instruction
+def test_background_text():
+    from background import BACKGROUND_GUIDANCE, PREVIOUS_GUIDANCE, background_text
 
-    text = consistency_instruction("Move the bowl to the right", "Pick up the black bowl.")
-    assert text.startswith('Task: Move the bowl to the right Previous interval: "Pick up the black bowl."')
-    assert consistency_instruction("", "Place it.").startswith('Previous interval: "Place it."')
-    assert len(consistency_instruction("x" * 1500, "y" * 200)) < 2000  # the field's limit
+    assert background_text("none") == ""
+    brief = background_text("task_brief", "Move the bowl to the right")
+    assert brief == "Background:\nTask brief: Move the bowl to the right\n\n" + BACKGROUND_GUIDANCE
+    with_previous = background_text("task_brief", "Move the bowl", previous="Pick up the black bowl.")
+    assert 'Previous interval was described as: "Pick up the black bowl."' in with_previous
+    assert with_previous.endswith(PREVIOUS_GUIDANCE) and "repeat" not in with_previous
+    scene = {"target_objects": ["black bowl"], "other_objects": [], "workspace": "tabletop"}
+    full = background_text("task_and_scene", "Move the bowl", scene)
+    assert "Target objects: black bowl.\nOther objects: none specified.\nWorkspace: tabletop." in full
+    with pytest.raises(ValueError):
+        background_text("task_brief", "")
+    with pytest.raises(ValueError):
+        background_text("task_brief", "x" * 2000)
+
+
+def test_echoes():
+    from caption_merge import echoes
+
+    assert echoes("Move the bowl to the right with the right hand.", "Move the bowl to the right")
+    assert not echoes("Pick up the black bowl with the right hand.", "Move the bowl to the right")
+    assert not echoes("place it", "go")  # briefs under three words are not judged
+
+
+def test_context_roles_are_valid_flora_layouts():
+    from caption_merge import CONTEXT_ROLES
+
+    # FLORA's sample validator accepts exactly these role orders.
+    allowed = [["TARGET"], ["BEFORE", "TARGET"], ["TARGET", "AFTER"], ["BEFORE", "TARGET", "AFTER"]]
+    assert all(list(roles) in allowed for roles in CONTEXT_ROLES.values())
 
 
 def test_operation_join():
