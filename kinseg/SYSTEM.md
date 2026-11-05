@@ -677,6 +677,7 @@ are available; choosing them is the problem.
 | `judge.py` | vision-language same-or-new judge |
 | `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption); join rules; `compare` |
 | `background.py` | the Captioner's background text, after the workspace template |
+| `caption_examples.py` | markdown pages: each run's captions per phase and each method's segments per episode |
 | `local_models.py` | local weight folders, warming, one load at a time, the load retry |
 | `remote/flora-remote` | remote server control |
 | `test_kinseg.py` | CPU tests |

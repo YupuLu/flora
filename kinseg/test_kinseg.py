@@ -223,6 +223,27 @@ def test_operation_join():
         (0.0, 1.0, "pick up"), (1.0, 5.0, "put")]
 
 
+def test_caption_examples_page():
+    from caption_examples import episode_page
+
+    case = {"family": "droid", "duration_sec": 3.0, "instruction": "Move the cup",
+            "references": [dict(start_sec=0.0, end_sec=1.5, subtask="pick up the cup"),
+                           dict(start_sec=1.5, end_sec=3.0, subtask="place the cup")],
+            "predictions": [dict(start_sec=0.0, end_sec=1.5, arm="RIGHT", gripper_events=[
+                                dict(arm="RIGHT", kind="close", start_sec=1.0, end_sec=1.2)]),
+                            dict(start_sec=1.5, end_sec=3.0, arm="STABLE", gripper_events=[])]}
+    rounds = lambda *caps: {"rounds": [[dict(start_s=a, end_s=b, caption=c, status="complete")  # noqa: E731
+                                        for (a, b), c in zip([(0.0, 1.5), (1.5, 3.0)], caps)]]}
+    records = {"A": rounds("Pick up the cup.", "Place the cup."), "B": rounds("pick up the cup", "Push the cup.")}
+    exact = lambda pred, ref, threshold: [(i, j) for i, p in enumerate(pred)  # noqa: E731
+                                          for j, r in enumerate(ref) if p == r]
+    page, index = episode_page("ep", case, records, None, lambda pred, ref: list(pred), exact, False, None)
+    assert "| 0 | 0.0–1.5 | right | R close | ▸ pick up the cup | Pick up the cup. | = |" in page
+    assert "| 1 | 1.5–3.0 | – |  | ▸ place the cup | Place the cup. | Push the cup. |" in page
+    assert "`0.0–1.5` pick up ✓<br>`1.5–3.0` place ✓" in page
+    assert index["A · operation join"] == "1.00 (2/2/2)"
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 

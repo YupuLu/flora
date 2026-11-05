@@ -104,7 +104,13 @@ CUDA_VISIBLE_DEVICES=0,1 python kinseg/caption_merge.py run --kinematic <run> --
     --episodes galaxea_002 ... --rounds 1 --background task_brief --robot-state --out <dir>
 python kinseg/caption_merge.py compare --autolabel <checkout> --kinematic <run> --tempseg out/tempseg \
     --runs A=<dir> B=<dir> --out compare.md
+# examples: per episode, every run's caption of each phase and every method's segments (✓ = matched)
+python kinseg/caption_examples.py --autolabel <checkout> --kinematic <run> --tempseg out/tempseg \
+    --videos <dir> --runs A=<dir> B=<dir> [--shared] --out examples.md
 ```
+
+Join rules are listed in `JOINS` at the top of `caption_examples.py`; a new
+rule added there appears for every run.
 
 ## Remote server
 
