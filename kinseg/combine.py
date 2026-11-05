@@ -81,7 +81,40 @@ Answer in JSON only:
 {"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
 The subtasks cover every phase from 0 to the last, in order, each phase once.""",
 }
+# v6: v1 and v5 merged in general terms; "v6-movement" and "v6-grouping" leave out one rule each.
+V6_RULES = {
+    "basic": "Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate "
+             "subtasks, but group very short phases and phases with similar verbs into the action they belong to.",
+    "basic-only": "Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate "
+                  "subtasks.",
+    "movement": "Arm movement that only brings the hand or a held object to the next action (reaching, carrying, "
+                "moving away) belongs to that action; after the last action, it belongs to the last action.",
+    "captions": "Some captions may be wrong or discontinuous; read each phase together with its neighbours.",
+    "kinematics": "Use the kinematic signals to support the captions. For each gripper close and open, decide "
+                  "whether it grasped an object, released one, or did neither.",
+}
+V6_ANSWER = """Answer in JSON only:
+{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "is": "grasp", "release" or "none"}, ...],
+ "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
+
+
+def _v6(*rules: str) -> str:
+    return ("Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own.\n"
+            + "\n".join(f"- {V6_RULES[r]}" for r in rules) + "\n\n" + V6_ANSWER)
+
+
+INSTRUCTIONS.update({
+    "v6": _v6("basic", "movement", "captions", "kinematics"),
+    "v6-movement": _v6("basic", "captions", "kinematics"),
+    "v6-grouping": _v6("basic-only", "movement", "captions", "kinematics"),
+})
 INSTRUCTION = INSTRUCTIONS["v1"]
+
+
+def asks_gripper(version: str) -> bool:
+    """Whether instruction ``version`` asks for gripper verdicts."""
+    return '"gripper"' in INSTRUCTIONS[version]
 
 
 def hands(case: Dict[str, object]) -> Tuple[str, ...]:
@@ -181,6 +214,32 @@ def subtask_ranges(answer: dict, n: int) -> Tuple[List[Tuple[int, int, str]], Li
     return out, repairs
 
 
+def verdicts(answer: dict, case: Dict[str, object], phases: List[Dict[str, object]]) -> List[Tuple[tuple, str]]:
+    """(gripper event, verdict) for every verdict of the answer that names an event of the log."""
+    from merge import gripper_events
+
+    robot_hands = hands(case)
+    events = gripper_events(case)
+    out = []
+    for item in answer.get("gripper") or []:
+        try:
+            k, kind, verdict = int(item["phase"]), str(item["event"]).lower(), str(item["is"]).lower()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= k < len(phases):
+            continue
+        hand = str(item.get("hand", robot_hands[-1])).lower()
+        out += [(e, verdict) for e in events
+                if e[1] == kind and phases[k]["start_s"] <= e[2] < phases[k]["end_s"]
+                and (len(robot_hands) == 1 or e[0].lower() == hand)]
+    return out
+
+
+def at_reference_cut(event: tuple, references: List[Dict[str, float]]) -> bool:
+    """A reference cut lies between 0.5 s before and 2 s after the event's end."""
+    return any(-0.5 <= r["end_sec"] - event[3] <= 2.0 for r in references[:-1])
+
+
 def confirmed_events(answer: dict, case: Dict[str, object], phases: List[Dict[str, object]]):
     """Gripper events the answer confirms: closes judged 'grasp' and opens judged 'release'."""
     from merge import gripper_events
@@ -235,17 +294,19 @@ def prompts(args) -> int:
 
 def ask(args) -> int:
     sys.path.insert(0, str(Path(args.autolabel)))
-    from autolabel.describe.vl_client import VLClient
+    from autolabel.describe.vl_client import VLClient, get_provider_api_key
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     todo = [p for p in sorted(Path(args.prompts).glob("*.json")) if args.overwrite or not (out / p.name).exists()]
     if args.episodes:
         todo = [p for p in todo if p.stem in set(args.episodes)]
+    # One key lookup per run: concurrent `pass show` calls can fail.
+    key = get_provider_api_key(args.provider) if todo else None
 
     def one(path: Path) -> str:
         item = json.loads(path.read_text())
-        client = VLClient(model=args.model, provider=args.provider, max_tokens=args.max_tokens,
+        client = VLClient(model=args.model, provider=args.provider, api_key=key, max_tokens=args.max_tokens,
                           timeout=args.timeout)
         started = time.monotonic()
         answer = client.analyze_video(item["prompt"], frames=[], system_prompt=item["system"])
@@ -312,12 +373,14 @@ def score(args) -> int:
             c3 = split_at_grasps(tempseg, confirmed, cuts)
             c4 = snap(c1, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
             row.setdefault("C1 model's subtasks", []).append(case_of(c1, refs))
-            if item.get("version", "v1") == "v1":  # gripper verdicts asked for
+            if asks_gripper(item.get("version", "v1")):
                 row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
                 row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
             row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
-                              events=len(gripper_events(case))))
+                              events=len(gripper_events(case)),
+                              verdicts=[(v, at_reference_cut(e, refs)) for e, v in
+                                        (verdicts(answer, case, phases) if answer else [])]))
             if repairs:
                 notes.append(f"{name} {episode}: " + "; ".join(repairs))
             if seg_root is not None:
@@ -328,18 +391,33 @@ def score(args) -> int:
                     C4=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c4, labels)],
                     confirmed=[dict(arm=e[0], kind=e[1], start_sec=e[2]) for e in confirmed],
                     gripper=(answer or {}).get("gripper"), repairs=repairs), indent=1) + "\n")
-    lines = ["| Source | Family | Method | F1@0.75 | pred/ref | Answers / repaired / events confirmed |",
-             "|---|---|---|---:|---:|---|"]
+    lines = ["| Source | Family | Method | F1@0.75 | F1@0.5 | pred/ref | Answers / repaired / events confirmed |",
+             "|---|---|---|---:|---:|---:|---|"]
+    verdict_lines = []
     for (name, fam), row in sorted(table.items(), key=lambda kv: (kv[0][0] != "baselines", kv[0][0], kv[0][1])):
         stats = row.get("_stats", [])
         extra = (f"{sum(s['answered'] for s in stats)}/{len(stats)} / {sum(s['repairs'] > 0 for s in stats)} / "
                  f"{sum(s['confirmed'] for s in stats)} of {sum(s['events'] for s in stats)}") if stats else ""
+        pairs = [v for s in stats for v in s.get("verdicts", [])]
+        if pairs:
+            by = {}
+            for verdict, at in pairs:
+                by.setdefault(verdict, [0, 0])
+                by[verdict][0] += 1
+                by[verdict][1] += at
+            verdict_lines.append(f"| {name} | {fam} | " + " | ".join(
+                f"{v}: {n} ({a} at a reference cut)" for v, (n, a) in sorted(by.items())) + " |")
         for method, cases in row.items():
             if method == "_stats":
                 continue
-            seg = score_family(cases)["segment@0.75"]
-            lines.append(f"| {name} | {fam} | {method} | {seg['f1']:.3f} | {seg['n_pred']}/{seg['n_ref']} | {extra} |")
+            scored = score_family(cases)
+            seg, half = scored["segment@0.75"], scored["segment@0.5"]
+            lines.append(f"| {name} | {fam} | {method} | {seg['f1']:.3f} | {half['f1']:.3f} | "
+                         f"{seg['n_pred']}/{seg['n_ref']} | {extra} |")
             extra = ""
+    if verdict_lines:
+        lines += ["", "Gripper verdicts (an event is at a reference cut when one lies 0.5 s before to 2 s after its end):",
+                  ""] + verdict_lines
     text = "\n".join(lines + ([""] + ["Repairs:"] + [f"- {n}" for n in notes] if notes else []))
     print(text)
     if args.out:

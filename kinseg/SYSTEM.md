@@ -749,6 +749,59 @@ Haiku under v2: 0.189 / 0.284 and 0.101 / 0.203 (Galaxea), 0.241 / 0.241 and
 Answers, segments, table and examples: `outputs/kinseg/combine/T4/`
 (`examples.md` shows each model's subtasks and verdicts per episode).
 
+**v6: v1 and v5 merged in general terms** (2026-11-05):
+
+```text
+Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own.
+- Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate subtasks,
+  but group very short phases and phases with similar verbs into the action they belong to.
+- Arm movement that only brings the hand or a held object to the next action (reaching, carrying, moving away)
+  belongs to that action; after the last action, it belongs to the last action.
+- Some captions may be wrong or discontinuous; read each phase together with its neighbours.
+- Use the kinematic signals to support the captions. For each gripper close and open, decide whether it
+  grasped an object, released one, or did neither.
+Answer in JSON only: {"gripper": [...], "subtasks": [...]}
+List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once.
+```
+
+The movement line restates v1's first rule as one principle (movement between
+actions belongs to the action it leads into), limited to arm movement that
+only brings the hand or a held object to the next action, so that moving an
+object as the action itself ("Move the bowl to the right") stays an action.
+The grouping clause restates v1's second rule; the gripper verdicts return.
+
+| sol, 26 episodes | Galaxea C1 (F1@0.5) | Galaxea C4 | DROID C1 (F1@0.5) | DROID C4 |
+|---|---:|---:|---:|---:|
+| TempSeg | 0.676 (0.835) | | 0.530 (0.747) | |
+| TempSeg + gripper split | 0.681 (0.851) | | 0.587 (0.804) | |
+| v1, runs 1 / 2 | 0.356 / 0.372 (0.795 / 0.772) | 0.521 / 0.538 | 0.574 / 0.630 (0.702 / 0.739) | 0.596 / 0.652 |
+| v5, runs 1 / 2 | 0.345 / 0.315 (0.745 / 0.740) | 0.538 / 0.493 | 0.547 / 0.526 (0.716 / 0.632) | 0.505 / 0.505 |
+| **v6, runs 1 / 2** | **0.511 / 0.526** (0.917 / 0.917) | **0.632 / 0.647** | **0.578 / 0.622** (0.778 / 0.844) | **0.600 / 0.644** |
+| v6 without the movement line | 0.373 (0.760) | 0.520 | 0.531 (0.735) | 0.551 |
+| v6 without the grouping clause | 0.522 (0.910) | 0.627 | 0.600 (0.778) | 0.622 |
+
+- **v6 is the best instruction on both families**, and it beats TempSeg +
+  gripper split on DROID in both runs (C4 0.600 / 0.644 against 0.587). At
+  tIoU 0.5 it beats TempSeg on both families (Galaxea 0.917 against 0.835).
+- **The movement line carries the gain** (without it, Galaxea 0.373, DROID
+  0.531); the grouping clause adds nothing measurable. The line also removes
+  the extra end segments: in run 1 no segment starts after the last
+  reference ends.
+- **Galaxea's granularity is now right** (run 1: 66 segments for 67 subtasks); of the
+  32 unmatched, 27 overlap a reference with tIoU 0.5-0.75. What is left on
+  Galaxea is boundary placement, which TempSeg's cuts improve (C4) but do not
+  close (0.647 against 0.676).
+- **Run-to-run noise** with sol: up to 0.056 on DROID (v1 0.574 / 0.630) and
+  0.03 on Galaxea, so only differences above about 0.05 count.
+- **Gripper verdicts** are almost the event kinds: every run calls 29 of 29
+  Galaxea closes grasps and 29 opens releases; on DROID 21 grasps, 19 releases
+  and the same 2 "none" (DROID 000037's drawer push, one at a reference cut).
+  So C2 equals C1, and C3 (TempSeg split at confirmed events) is the gripper
+  split with those two events removed (DROID 0.549 against 0.587).
+
+Example pages: `outputs/kinseg/combine/v6_examples.md` (v6 runs 1 and 2, v6
+without the movement line, v1, v5, per episode).
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -767,6 +820,7 @@ Answers, segments, table and examples: `outputs/kinseg/combine/T4/`
 | 11 | Captioner inputs varied (8 variants, 26 episodes; section 5.3); best operation join | 0.362 (TempSeg 0.676) | 0.306 (TempSeg 0.530) | inputs shift agreement inside and across subtasks together |
 | 12 | Our prompt template, 5 runs (26 episodes; section 5.6); best operation join | 0.346 | 0.300 | best separation so far (previous interval), but the join rule wastes it |
 | 13 | GPT-6.1-sol combines T4's captions from a status log (26 episodes; 5.7), snapped to TempSeg cuts | 0.521 (TempSeg 0.676) | **0.596** (TempSeg 0.530, + gripper split 0.587) | Galaxea: right grouping, boundaries on our cuts ~0.5 s off |
+| 14 | the same with instruction v6 (5.7), two runs, snapped | 0.632 / 0.647 | **0.600 / 0.644** | Galaxea: boundary placement (F1@0.5 0.917, above TempSeg's 0.835) |
 
 Upper bounds (from the references, not methods): keeping exactly the cuts
 nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
