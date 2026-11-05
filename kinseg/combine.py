@@ -12,7 +12,10 @@ segments:
 * C3 (v1): TempSeg's segments with the same split from confirmed events only (the gripper split of
   ``merge.py`` uses every event);
 * C4: C1 with each endpoint moved to TempSeg's nearest cut within ``SNAP_S`` (the model's grouping
-  with TempSeg's boundary placement, which is closer to the references than our phase cuts).
+  with TempSeg's boundary placement, which is closer to the references than our phase cuts);
+* C5 (with verdicts): C1 with a cut within one phase of a confirmed grasp moved to the end of the
+  grasp's phase (a confirmed grasp completes the pick-up; ``anchored``);
+* C6: C5 snapped like C4.
 
     python kinseg/combine.py prompts --captions <caption run> --kinematic <run> --out <dir>
     python kinseg/combine.py ask --prompts <dir> --provider openlux-codex-gpt-1 --autolabel <checkout> --out <dir>
@@ -89,7 +92,13 @@ V6_RULES = {
                   "subtasks.",
     "movement": "Arm movement that only brings the hand or a held object to the next action (reaching, carrying, "
                 "moving away) belongs to that action; after the last action, it belongs to the last action.",
+    "movement-previous": "Arm movement that only brings the hand or a held object to the next action (reaching, "
+                         "carrying) belongs to that action; moving away after an action belongs to the action it "
+                         "follows.",
     "captions": "Some captions may be wrong or discontinuous; read each phase together with its neighbours.",
+    "kinematics-only": "Use the kinematic signals to support the captions.",
+    "kinematics-boundary": "Use the kinematic signals to support the captions. For each gripper close and open, "
+                           "decide whether a subtask ends there, begins there, or neither.",
     "kinematics": "Use the kinematic signals to support the captions. For each gripper close and open, decide "
                   "whether it grasped an object, released one, or did neither.",
 }
@@ -99,15 +108,29 @@ V6_ANSWER = """Answer in JSON only:
 List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
 
 
-def _v6(*rules: str) -> str:
+V6_ANSWER_SUBTASKS = """Answer in JSON only:
+{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+The subtasks cover every phase from 0 to the last, in order, each phase once."""
+V6_ANSWER_BOUNDARY = """Answer in JSON only:
+{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "boundary": "ends", "begins" or "neither"}, ...],
+ "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
+
+
+def _v6(*rules: str, answer: str = V6_ANSWER) -> str:
     return ("Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own.\n"
-            + "\n".join(f"- {V6_RULES[r]}" for r in rules) + "\n\n" + V6_ANSWER)
+            + "\n".join(f"- {V6_RULES[r]}" for r in rules) + "\n\n" + answer)
 
 
 INSTRUCTIONS.update({
     "v6": _v6("basic", "movement", "captions", "kinematics"),
     "v6-movement": _v6("basic", "captions", "kinematics"),
     "v6-grouping": _v6("basic-only", "movement", "captions", "kinematics"),
+    # the opposite attachment of moving away (to the action it follows)
+    "v6-previous": _v6("basic", "movement-previous", "captions", "kinematics"),
+    # no gripper verdicts asked; or a boundary question instead of grasp/release
+    "v6-noverdict": _v6("basic", "movement", "captions", "kinematics-only", answer=V6_ANSWER_SUBTASKS),
+    "v6-boundary": _v6("basic", "movement", "captions", "kinematics-boundary", answer=V6_ANSWER_BOUNDARY),
 })
 INSTRUCTION = INSTRUCTIONS["v1"]
 
@@ -238,6 +261,28 @@ def verdicts(answer: dict, case: Dict[str, object], phases: List[Dict[str, objec
 def at_reference_cut(event: tuple, references: List[Dict[str, float]]) -> bool:
     """A reference cut lies between 0.5 s before and 2 s after the event's end."""
     return any(-0.5 <= r["end_sec"] - event[3] <= 2.0 for r in references[:-1])
+
+
+ANCHOR_KINDS = ("close",)
+
+
+def anchored(ranges: List[Tuple[int, int, str]], phases: List[Dict[str, object]], events,
+             kinds: Sequence[str] = ANCHOR_KINDS) -> List[Tuple[float, float]]:
+    """Segments of ``ranges`` after moving each cut that lies within one phase of a confirmed event of
+    ``kinds`` to the end of that event's phase. Cuts are indices of the first phase of each subtask."""
+    starts = [a for a, _, _ in ranges][1:]
+    for e in events:
+        if e[1] not in kinds:
+            continue
+        k = next((i for i, p in enumerate(phases) if p["start_s"] <= e[2] < p["end_s"]), None)
+        if k is None or k + 1 >= len(phases):
+            continue
+        near = [b for b in starts if abs(b - (k + 1)) <= 1]
+        if near:
+            b = min(near, key=lambda x: abs(x - (k + 1)))
+            starts[starts.index(b)] = k + 1
+    edges = [0] + sorted(set(starts)) + [len(phases)]
+    return [(phases[a]["start_s"], phases[b - 1]["end_s"]) for a, b in zip(edges[:-1], edges[1:]) if b > a]
 
 
 def confirmed_events(answer: dict, case: Dict[str, object], phases: List[Dict[str, object]]):
@@ -376,6 +421,10 @@ def score(args) -> int:
             if asks_gripper(item.get("version", "v1")):
                 row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
                 row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
+                c5 = anchored(ranges, phases, confirmed) if ranges else c1
+                row.setdefault("C5 C1, cuts anchored at confirmed grasps", []).append(case_of(c5, refs))
+                row.setdefault(f"C6 C5 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(
+                    snap(c5, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S), refs))
             row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
                               events=len(gripper_events(case)),

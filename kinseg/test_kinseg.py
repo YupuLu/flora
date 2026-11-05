@@ -300,6 +300,18 @@ def test_combine_log_answer_and_events():
     assert subtask_ranges({"subtasks": [{"phases": [1, 5]}, {"phases": [0, 2]}]}, 4)[0] == [(0, 2, ""), (3, 3, "")]
 
 
+def test_anchored_cuts():
+    from combine import anchored
+
+    phases = [dict(start_s=float(k), end_s=float(k + 1)) for k in range(6)]
+    close = ("RIGHT", "close", 1.5, 1.7)  # in phase 1
+    # The model cut after phase 2 (subtasks 0-2, 3-5); the grasp is in phase 1, so the cut moves to 2.0.
+    assert anchored([(0, 2, ""), (3, 5, "")], phases, [close]) == [(0.0, 2.0), (2.0, 6.0)]
+    # A cut two phases away is left alone, and opens are not anchors by default.
+    assert anchored([(0, 3, ""), (4, 5, "")], phases, [close]) == [(0.0, 4.0), (4.0, 6.0)]
+    assert anchored([(0, 2, ""), (3, 5, "")], phases, [("RIGHT", "open", 1.5, 1.7)]) == [(0.0, 3.0), (3.0, 6.0)]
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 
