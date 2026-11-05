@@ -183,6 +183,29 @@ def robot_state(case: Dict[str, object], start_s: float, end_s: float) -> str:
                      motion])
 
 
+def kinematics(case: Dict[str, object], start_s: float, end_s: float) -> str:
+    """The robot state of [start_s, end_s) for our prompt, per hand in FLORA's words ("right hand").
+
+    The same facts as :func:`robot_state`: whether each hand moves, its gripper state at the start and
+    its closes and opens during the interval. A one-armed robot is its right hand.
+    """
+    from merge import gripper_events
+
+    events = gripper_events(case)
+    phases = case["predictions"]
+    bimanual = any(p["arm"] in ("LEFT", "BOTH") for p in phases) or any(e[0] == "LEFT" for e in events)
+    out = []
+    for arm in ("LEFT", "RIGHT") if bimanual else ("RIGHT",):
+        moving = any(p["start_sec"] < end_s and p["end_sec"] > start_s and p["arm"] in (arm, "BOTH") for p in phases)
+        before = [kind for a, kind, t0, _ in events if a == arm and t0 < start_s]
+        state = "closed" if before and before[-1] == "close" else "open"
+        changes = [f"{kind}s" for a, kind, t0, _ in events if a == arm and start_s <= t0 < end_s]
+        gripper = (f"its gripper is {state} at the start, then " + ", then ".join(changes) if changes
+                   else f"its gripper stays {state}")
+        out.append(f"{arm.capitalize()} hand {'moves' if moving else 'is still'}; {gripper}.")
+    return " ".join(out)
+
+
 def initial_intervals(case: Dict[str, object], tempseg: Optional[Dict[str, object]]) -> List[Dict[str, object]]:
     phases = [(p["start_sec"], p["end_sec"]) for p in case["predictions"]]
     cuts = [e for _, e in phases[:-1]]
@@ -198,18 +221,19 @@ CONTEXT_ROLES = {"both": ("BEFORE", "TARGET", "AFTER"), "before": ("BEFORE", "TA
                  "after": ("TARGET", "AFTER"), "none": ("TARGET",)}
 
 
-def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
+def caption_subset(pipeline, videos, segments, todo, profile, session, prompt_for,
                    context: str = "both") -> Dict[int, Dict[str, str]]:
     """FLORA's caption_single for ``segments[k]``, ``k`` in ``todo``, with context from the full list.
 
-    ``text_for(k, previous_caption, segment)`` gives the episode-instruction text of interval ``k`` (empty for
-    none); intervals are captioned in order, so the previous caption is the one just written (or the
-    stored one when ``k - 1`` is not captioned this round). ``context`` chooses which of FLORA's
-    BEFORE/TARGET/AFTER video blocks are sent; FLORA's prompt lists exactly the blocks sent.
+    ``prompt_for(k, previous_caption, segment, sample, video_token)`` gives the user message for interval
+    ``k``, or None for FLORA's own prompt and inputs; intervals are captioned in order, so the previous
+    caption is the one just written (or the stored one when ``k - 1`` is not captioned this round).
+    ``context`` chooses which of FLORA's BEFORE/TARGET/AFTER video blocks are sent; the prompt lists
+    exactly the blocks sent. Each caption keeps its message (``prompt``, '' for FLORA's own).
     """
     import hashlib
     import tempfile
-    from flora_unified.unified_input import processor_inputs, prompt as native_prompt
+    from flora_unified.unified_input import processor_inputs
     from transformers.video_utils import VideoMetadata
 
     roles = CONTEXT_ROLES[context]
@@ -232,14 +256,13 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
         for plan in sorted(plans, key=lambda p: p["event_index"]):
             k = plan["event_index"]
             previous = (out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")) if k else ""
-            text_instruction = text_for(k, previous, segments[k])
             plan = dict(plan, blocks=[b for b in plan["blocks"] if b["role"] in roles])
             sample = pipeline.a.caption_sample(plan, receipts, ["main"])
-            if text_instruction.strip():
+            content = prompt_for(k, previous, segments[k], sample, proc.video_token)
+            if content is not None:
                 from flora_unified.unified_input import load_frames
                 frames, _ = load_frames(sample, root)
-                text = proc.apply_chat_template([dict(role="user", content=native_prompt(sample, proc.video_token)
-                                                      + pipeline.instruction_suffix(text_instruction))],
+                text = proc.apply_chat_template([dict(role="user", content=content)],
                                                 tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 metadata = [VideoMetadata(total_num_frames=len(f), fps=float(videos["main"].rate),
                                           frames_indices=list(b["block_local_timestamp_indices"]))
@@ -249,22 +272,46 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, text_for,
             else:
                 inputs, _, _ = processor_inputs(sample, root, proc)
             out[k] = dict(caption=pipeline.generate(model, proc, inputs, 512), status="complete",
-                          instruction_text=text_instruction)
+                          prompt="" if content is None else content.replace(proc.video_token, "<video>"))
     return out
 
 
-def episode_text(args, case: Dict[str, object], scene: Optional[Dict[str, object]]):
-    """``text_for(k, previous, segment)`` for one episode, from --background / --instruction / --previous /
-    --robot-state."""
+def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, object]], pipeline):
+    """``prompt_for(k, previous, segment, sample, video_token)`` for one episode.
+
+    ``--prompt field`` (FLORA's prompt; the text goes into its episode-instruction field): --instruction
+    sends the task sentence alone, otherwise --background / --robot-state / --previous build the
+    background text, and with none of them FLORA's own prompt is used. ``--prompt template``
+    (``caption_prompt.py``): FLORA's prompt with its context sentence matched to the blocks sent and the
+    information from --brief / --objects (from --scenes) / --kinematics / --previous written after it,
+    with --rules for how to use it.
+    """
     import background
+    import caption_prompt
+    from flora_unified.unified_input import prompt as native_prompt
 
     task = str(case.get("instruction", ""))
-    if args.instruction:  # FLORA's plain episode instruction: the task sentence alone
-        return lambda k, previous, segment: task
-    def text_for(k: int, previous: str, segment: Dict[str, float]) -> str:
-        robot = robot_state(case, segment["start_s"], segment["end_s"]) if args.robot_state else ""
-        return background.background_text(args.background, task, scene, previous if args.previous else "", robot)
-    return text_for
+    if args.prompt == "template":
+        objects = caption_prompt.objects_line(scene)
+        if args.objects and not objects:
+            raise ValueError(f"{case['id']}: --objects needs a scene file with target_objects in --scenes")
+
+        def prompt_for(k, previous, segment, sample, video_token):
+            items = dict(brief=task if args.brief else "", objects=objects if args.objects else "",
+                         kinematics=(kinematics(case, segment["start_s"], segment["end_s"])
+                                     if args.kinematics else ""),
+                         previous=previous if args.previous else "")
+            return caption_prompt.build(sample, video_token, items, args.rules)
+        return prompt_for
+
+    def prompt_for(k, previous, segment, sample, video_token):
+        if args.instruction:  # FLORA's plain episode instruction: the task sentence alone
+            text = task
+        else:
+            robot = robot_state(case, segment["start_s"], segment["end_s"]) if args.robot_state else ""
+            text = background.background_text(args.background, task, scene, previous if args.previous else "", robot)
+        return native_prompt(sample, video_token) + pipeline.instruction_suffix(text) if text.strip() else None
+    return prompt_for
 
 
 def run(args) -> int:
@@ -291,7 +338,7 @@ def run(args) -> int:
         tempseg = json.loads((Path(args.tempseg) / f"{episode}.json").read_text()) if args.cuts == "union" else None
         scene = (json.loads((Path(args.scenes) / f"{episode}.json").read_text())
                  if args.scenes and (Path(args.scenes) / f"{episode}.json").exists() else None)
-        text_for = episode_text(args, case, scene)
+        prompt_for = episode_prompt(args, case, scene, pipeline)
         videos, _ = engine._inputs(str(Path(args.videos) / f"{episode}.mp4"), PROFILES[args.profile], None, None,
                                    False, "")
         intervals = initial_intervals(case, tempseg)
@@ -302,12 +349,12 @@ def run(args) -> int:
             todo = {k for k, item in enumerate(intervals) if item["status"] is None or item.get("joined")}
             rows = caption_subset(pipeline, videos,
                                   [dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in intervals],
-                                  todo, PROFILES[args.profile], session, text_for, args.context)
+                                  todo, PROFILES[args.profile], session, prompt_for, args.context)
             for k, row in rows.items():
                 intervals[k].update(caption=row["caption"], status=row["status"], joined=False,
-                                    instruction_text=row.get("instruction_text", ""))
+                                    prompt=row.get("prompt", ""))
             rounds.append([dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"], status=i["status"],
-                                members=i["members"], instruction_text=i.get("instruction_text", ""))
+                                members=i["members"], prompt=i.get("prompt", ""))
                            for i in intervals])
             joined = join_equal(intervals)
             print(f"{episode} round {r + 1}: {len(todo)} captioned, {len(intervals)} -> {len(joined)} intervals",
@@ -317,7 +364,9 @@ def run(args) -> int:
             intervals = joined
         record = dict(id=episode, family=case["family"], cuts=args.cuts, task=case.get("instruction", ""),
                       plain_instruction=args.instruction, background=args.background, context=args.context,
-                      previous=args.previous, robot_state=args.robot_state, rounds=rounds,
+                      previous=args.previous, robot_state=args.robot_state, prompt=args.prompt,
+                      template=dict(brief=args.brief, objects=args.objects, kinematics=args.kinematics,
+                                    rules=args.rules) if args.prompt == "template" else None, rounds=rounds,
                       final=[dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in
                              join_equal(intervals)],
                       elapsed_s=round(time.monotonic() - started, 1))
@@ -480,6 +529,13 @@ def main(argv=None) -> int:
                    help="add the previous interval's caption to the background, for consistent names only")
     r.add_argument("--robot-state", action="store_true",
                    help="add TARGET's gripper state and moving arms from the kinematics to the background")
+    r.add_argument("--prompt", choices=("field", "template"), default="field",
+                   help="field: FLORA's prompt, text in its episode-instruction field; template: caption_prompt.py")
+    r.add_argument("--brief", action="store_true", help="template: the task sentence as the task brief")
+    r.add_argument("--objects", action="store_true", help="template: the object list of the --scenes file")
+    r.add_argument("--kinematics", action="store_true", help="template: hand motion and gripper changes in TARGET")
+    r.add_argument("--rules", action="store_true", help="template: ask the model to build an understanding "
+                                                       "from the information, with one rule per item")
     r.add_argument("--overwrite", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
@@ -495,6 +551,11 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.command == "run" and args.cuts == "union" and not args.tempseg:
         ap.error("--cuts union needs --tempseg")
+    if args.command == "run" and args.prompt == "field" and (args.brief or args.objects or args.kinematics or args.rules):
+        ap.error("--brief, --objects, --kinematics and --rules need --prompt template")
+    if args.command == "run" and args.prompt == "template" and (args.instruction or args.background != "none"
+                                                                 or args.robot_state):
+        ap.error("--instruction, --background and --robot-state are for --prompt field")
     if args.command in ("score", "compare") and not args.autolabel:
         ap.error("give --autolabel or set AUTOLABEL_ROOT")
     return {"run": run, "score": score, "compare": compare}[args.command](args)

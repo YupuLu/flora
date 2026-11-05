@@ -180,6 +180,38 @@ def test_robot_state():
     assert text.endswith(ROBOT_GUIDANCE)
 
 
+def test_caption_prompt_template():
+    from caption_prompt import FLORA_CONTEXT, OUTPUT_LINE, RULES_HEADING, information, instruction
+    from caption_merge import kinematics
+
+    base = "Infer the local goal. " + FLORA_CONTEXT + " A failed attempt keeps its instruction."
+    assert instruction(["BEFORE", "TARGET", "AFTER"], base) == base
+    assert instruction(["TARGET", "AFTER"], base) == ("Infer the local goal. Use AFTER only to disambiguate TARGET, "
+                                                      "not to add operations occurring outside it. A failed attempt "
+                                                      "keeps its instruction.")
+    assert instruction(["TARGET"], base) == "Infer the local goal. A failed attempt keeps its instruction."
+    assert information({}, rules=True) == ""
+    text = information(dict(brief="Move the cup", previous="Reach for the cup.", objects=""), rules=True)
+    assert text.startswith('Episode information:\nTask brief: Move the cup\nPrevious interval: "Reach for the cup."')
+    assert RULES_HEADING in text and "- Task brief:" in text and "- Objects:" not in text
+    assert text.endswith(OUTPUT_LINE)
+    assert RULES_HEADING not in information(dict(brief="Move the cup"), rules=False)
+
+    def event(arm, kind, t):
+        return dict(arm=arm, kind=kind, start_sec=t, end_sec=t + 0.2, source="measured")
+
+    two_arms = {"predictions": [
+        dict(start_sec=0, end_sec=2, arm="RIGHT", gripper_events=[event("RIGHT", "close", 1.5)]),
+        dict(start_sec=2, end_sec=4, arm="STABLE", gripper_events=[event("RIGHT", "open", 3.0)]),
+        dict(start_sec=4, end_sec=6, arm="LEFT", gripper_events=[])]}
+    assert kinematics(two_arms, 0, 2) == ("Left hand is still; its gripper stays open. "
+                                          "Right hand moves; its gripper is open at the start, then closes.")
+    assert kinematics(two_arms, 2, 4) == ("Left hand is still; its gripper stays open. "
+                                          "Right hand is still; its gripper is closed at the start, then opens.")
+    one_arm = {"predictions": [dict(start_sec=0, end_sec=2, arm="RIGHT", gripper_events=[event("RIGHT", "close", 1.0)])]}
+    assert kinematics(one_arm, 0, 2) == "Right hand moves; its gripper is open at the start, then closes."
+
+
 def test_echoes():
     from caption_merge import echoes
 
