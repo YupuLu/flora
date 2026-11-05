@@ -62,6 +62,15 @@ List every gripper close and open of the log. The subtasks cover every phase fro
 Answer in JSON only:
 {"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
 The subtasks cover every phase from 0 to the last, in order, each phase once.""",
+    # v5: v2 with a rule to keep the basic manipulation actions separate.
+    "v5": STEP + """
+- Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate subtasks.
+- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
+- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
+
+Answer in JSON only:
+{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+The subtasks cover every phase from 0 to the last, in order, each phase once.""",
     # v3: v2 with FLORA-TempSeg's own granularity policy (its prompt) in place of our conventions.
     "v3": STEP + """
 - Acquisition and delivery are distinct when observable. Ordinary contacts, adjustments and low-motion pauses within the same ongoing goal do not create new subtasks.

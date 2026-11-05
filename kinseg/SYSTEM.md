@@ -729,6 +729,7 @@ autolabel's VL client, and Claude Haiku as a subagent.
 | v1: our conventions (reach, carry and retreat; word variants) + gripper verdicts | 0.356 / 0.521 | 0.574 / 0.596 |
 | v2: no conventions; "some captions may be wrong … discontinuous"; kinematics support the captions; subtasks only | 0.277 / 0.453 | 0.505 / 0.465 |
 | v3: v2 + FLORA-TempSeg's own granularity policy ("Acquisition and delivery are distinct when observable. Ordinary contacts, adjustments and low-motion pauses within the same ongoing goal do not create new subtasks.") | 0.331 / 0.510 | 0.556 / 0.556 |
+| v5: v2 + "Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate subtasks." | 0.345 / **0.538** | 0.547 / 0.505 |
 
 v2 mostly keeps v1's grouping (equal matches in 24 of 26 episodes) and drops
 the extra edge segments, but without a granularity rule it chooses its own
@@ -737,7 +738,10 @@ cylinder from … to …" (11 segments for 17 subtasks, no match; v1 7), and in
 DROID 000061 caption noise splits two scoops into 14 steps. v3 takes the
 granularity sentence from FLORA's TempSeg prompt rather than from WGO's
 references and recovers most of v1 (Galaxea 002: 19 segments; DROID 000061:
-6). Single runs; sol's own repeatability on autolabel's describe task was
+6). v5 states the same granularity in plain words and does about as well
+(Galaxea 002: 21 segments, 4 matched; DROID 000061: 10 segments); its DROID
+cuts sit later (median +0.27 s from the reference, v1 -0.28 s), and snapping
+them to TempSeg's cuts lowers DROID (0.547 → 0.505). Single runs; sol's own repeatability on autolabel's describe task was
 about 86 %, so differences of a few hundredths are noise. GPT-6-luna and
 Haiku under v2: 0.189 / 0.284 and 0.101 / 0.203 (Galaxea), 0.241 / 0.241 and
 0.128 / 0.156 (DROID).
