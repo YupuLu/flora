@@ -857,6 +857,55 @@ closes called "neither" sit next to a reference cut, and on DROID 11 of 16
 closes called "ends" do not. The grasp/release verdicts stay: they are what
 C5 anchors on, and they reject the two DROID events where nothing was grasped.
 
+**Held-out check** (2026-11-05). v6 and the post-processing (C1-C6) were
+fixed on the 26 episodes; the other 49 (12 Galaxea, 37 DROID) were then
+captioned with T4's settings and combined by sol twice, unchanged:
+
+| 49 held-out episodes | Galaxea F1@0.75 (F1@0.5) | DROID F1@0.75 (F1@0.5) |
+|---|---:|---:|
+| TempSeg | 0.700 (0.883) | 0.576 (0.754) |
+| TempSeg + gripper split | 0.700 (0.883) | 0.579 (0.751) |
+| v6 C1, runs 1 / 2 | 0.571 / 0.643 (0.964) | 0.574 / 0.563 (0.843 / 0.805) |
+| v6 C4 (snapped) | 0.696 / 0.696 | **0.601** / 0.571 |
+| v6 C6 (grasp anchors + snapped) | **0.714 / 0.714** (0.964) | 0.556 / 0.528 |
+| C3 (TempSeg split at confirmed events) | 0.700 | **0.605** / 0.605 |
+
+And all 75 episodes pooled (26 tuning + 49 held-out):
+
+| 75 episodes | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg (FLORA) | 0.687 (0.857) | 0.562 (0.752) |
+| TempSeg + gripper split | 0.690 (0.866) | 0.581 (0.767) |
+| v6 C6, runs 1 / 2 | **0.694 / 0.694** (0.939) | 0.569 / 0.561 |
+| v6 C4, runs 1 / 2 | 0.661 / 0.669 (0.939) | **0.601 / 0.592** (0.818 / 0.804) |
+| C3, runs 1 / 2 | 0.690 | 0.588 / 0.588 |
+
+- **On unseen episodes the combination holds.** Galaxea with grasp anchors
+  and snapping (C6) is above TempSeg in both runs (0.714 against 0.700); DROID
+  with snapping (C4) matches or beats it (0.601 / 0.571 against 0.576).
+  Over all 75 episodes the best recipe per family is Galaxea C6 0.694 and
+  DROID C4 0.601 / 0.592, against FLORA's TempSeg 0.687 / 0.562 and our
+  earlier best, TempSeg + gripper split, 0.690 / 0.581.
+- **The grouping is much better than TempSeg's; the boundaries are not yet.**
+  At tIoU 0.5 the model's own subtasks score 0.939 / 0.82 against TempSeg's
+  0.857 / 0.752 over 75 episodes. At 0.75 the boundary placement takes most of
+  that back, and TempSeg's cuts (snapping) recover it only partly.
+- **The grasp anchor is a Galaxea convention.** It helps Galaxea on held-out
+  data too (C1 → C5 +0.04-0.05) and hurts DROID (−0.03-0.04), whose pick-ups
+  end 1.7 s after the close command. Like the attachment of moving away, it is
+  a per-dataset setting.
+- **Confirmed gripper events matter on held-out DROID.** Sol calls 12 of 114
+  held-out DROID events "none" (only 2 of them at a reference cut); TempSeg
+  split at confirmed events only (C3) is the best held-out DROID result,
+  0.605 against 0.579 for the split at every event. This is the original idea
+  behind the verdicts: use a gripper event as an anchor only when the grasp or
+  release is confirmed.
+- **Run-to-run noise stays about 0.04-0.07 on C1** (held-out Galaxea 0.571 /
+  0.643); the post-processed scores are steadier (C6 0.714 / 0.714).
+
+Files: `outputs/kinseg/combine/heldout_v6/` (prompts, answers, `score.md`,
+`combination_examples.md`), `outputs/kinseg/combine/all75_v6/score.md`.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -876,6 +925,7 @@ C5 anchors on, and they reject the two DROID events where nothing was grasped.
 | 12 | Our prompt template, 5 runs (26 episodes; section 5.6); best operation join | 0.346 | 0.300 | best separation so far (previous interval), but the join rule wastes it |
 | 13 | GPT-6.1-sol combines T4's captions from a status log (26 episodes; 5.7), snapped to TempSeg cuts | 0.521 (TempSeg 0.676) | **0.596** (TempSeg 0.530, + gripper split 0.587) | Galaxea: right grouping, boundaries on our cuts ~0.5 s off |
 | 14 | the same with instruction v6 (5.7), two runs, snapped | 0.632 / 0.647 | **0.600 / 0.644** | Galaxea: boundary placement (F1@0.5 0.917, above TempSeg's 0.835) |
+| 15 | **v6, all 75 episodes (49 held out), per family: Galaxea grasp anchors + snapped (C6), DROID snapped (C4)** | **0.694 / 0.694** | **0.601 / 0.592** | best so far on both; grouping far better (F1@0.5 0.939 / 0.82 against 0.857 / 0.752), boundaries limit F1@0.75 |
 
 Upper bounds (from the references, not methods): keeping exactly the cuts
 nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
@@ -884,8 +934,11 @@ are available; choosing them is the problem.
 
 ## 7. Where we stand
 
-- **Best combination**: TempSeg + gripper split, 0.690 / 0.581 (TempSeg alone
-  0.687 / 0.562).
+- **Best combination** (2026-11-05, all 75 episodes, 49 of them held out): the
+  Captioner on our phases (T4) combined by GPT-6.1-sol from a status log (v6,
+  5.7), with TempSeg's cuts for boundary placement and, on Galaxea, cuts
+  anchored at confirmed grasps: 0.694 / 0.601 (two runs: 0.694 / 0.592), against
+  TempSeg 0.687 / 0.562 and TempSeg + gripper split 0.690 / 0.581.
 - **Room**: the perfect judge on ours and TempSeg's cuts, 0.917 / 0.850; the
   two candidate sets together contain almost every reference cut (94 of 98 on
   Galaxea, 80 of 100 on DROID, within 0.5 s).
