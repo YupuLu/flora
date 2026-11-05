@@ -282,9 +282,9 @@ def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, obje
     ``--prompt field`` (FLORA's prompt; the text goes into its episode-instruction field): --instruction
     sends the task sentence alone, otherwise --background / --robot-state / --previous build the
     background text, and with none of them FLORA's own prompt is used. ``--prompt template``
-    (``caption_prompt.py``): FLORA's prompt with its context sentence matched to the blocks sent and the
-    information from --brief / --objects (from --scenes) / --kinematics / --previous written after it,
-    with --rules for how to use it.
+    (``caption_prompt.py``): FLORA's prompt with the information from --brief / --objects (from --scenes) /
+    --kinematics / --previous written between the video blocks and the instruction, --notes on how to
+    use it, and the instruction's context sentence matched to the blocks sent.
     """
     import background
     import caption_prompt
@@ -301,7 +301,7 @@ def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, obje
                          kinematics=(kinematics(case, segment["start_s"], segment["end_s"])
                                      if args.kinematics else ""),
                          previous=previous if args.previous else "")
-            return caption_prompt.build(sample, video_token, items, args.rules)
+            return caption_prompt.build(sample, video_token, items, args.notes)
         return prompt_for
 
     def prompt_for(k, previous, segment, sample, video_token):
@@ -366,7 +366,7 @@ def run(args) -> int:
                       plain_instruction=args.instruction, background=args.background, context=args.context,
                       previous=args.previous, robot_state=args.robot_state, prompt=args.prompt,
                       template=dict(brief=args.brief, objects=args.objects, kinematics=args.kinematics,
-                                    rules=args.rules) if args.prompt == "template" else None, rounds=rounds,
+                                    notes=args.notes) if args.prompt == "template" else None, rounds=rounds,
                       final=[dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in
                              join_equal(intervals)],
                       elapsed_s=round(time.monotonic() - started, 1))
@@ -534,8 +534,7 @@ def main(argv=None) -> int:
     r.add_argument("--brief", action="store_true", help="template: the task sentence as the task brief")
     r.add_argument("--objects", action="store_true", help="template: the object list of the --scenes file")
     r.add_argument("--kinematics", action="store_true", help="template: hand motion and gripper changes in TARGET")
-    r.add_argument("--rules", action="store_true", help="template: ask the model to build an understanding "
-                                                       "from the information, with one rule per item")
+    r.add_argument("--notes", action="store_true", help="template: one short note per item on how to use it")
     r.add_argument("--overwrite", action="store_true")
     s = sub.add_parser("score")
     s.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
@@ -551,8 +550,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.command == "run" and args.cuts == "union" and not args.tempseg:
         ap.error("--cuts union needs --tempseg")
-    if args.command == "run" and args.prompt == "field" and (args.brief or args.objects or args.kinematics or args.rules):
-        ap.error("--brief, --objects, --kinematics and --rules need --prompt template")
+    if args.command == "run" and args.prompt == "field" and (args.brief or args.objects or args.kinematics or args.notes):
+        ap.error("--brief, --objects, --kinematics and --notes need --prompt template")
     if args.command == "run" and args.prompt == "template" and (args.instruction or args.background != "none"
                                                                  or args.robot_state):
         ap.error("--instruction, --background and --robot-state are for --prompt field")

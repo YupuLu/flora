@@ -181,7 +181,7 @@ def test_robot_state():
 
 
 def test_caption_prompt_template():
-    from caption_prompt import FLORA_CONTEXT, OUTPUT_LINE, RULES_HEADING, information, instruction
+    from caption_prompt import FLORA_CONTEXT, NOTES_HEADING, information, instruction
     from caption_merge import kinematics
 
     base = "Infer the local goal. " + FLORA_CONTEXT + " A failed attempt keeps its instruction."
@@ -190,12 +190,12 @@ def test_caption_prompt_template():
                                                       "not to add operations occurring outside it. A failed attempt "
                                                       "keeps its instruction.")
     assert instruction(["TARGET"], base) == "Infer the local goal. A failed attempt keeps its instruction."
-    assert information({}, rules=True) == ""
-    text = information(dict(brief="Move the cup", previous="Reach for the cup.", objects=""), rules=True)
-    assert text.startswith('Episode information:\nTask brief: Move the cup\nPrevious interval: "Reach for the cup."')
-    assert RULES_HEADING in text and "- Task brief:" in text and "- Objects:" not in text
-    assert text.endswith(OUTPUT_LINE)
-    assert RULES_HEADING not in information(dict(brief="Move the cup"), rules=False)
+    assert information({}, notes=True) == ""
+    text = information(dict(brief="Move the cup", previous="Reach for the cup.", objects=""), notes=True)
+    assert text == ('Episode information:\nTask brief: Move the cup\nPrevious interval: "Reach for the cup."\n'
+                    + NOTES_HEADING + "\n- The task brief is the goal of the whole episode; describe only the step "
+                    "in TARGET.\n- Stay consistent with the previous interval, or continue from it.")
+    assert NOTES_HEADING not in information(dict(brief="Move the cup"), notes=False)
 
     def event(arm, kind, t):
         return dict(arm=arm, kind=kind, start_sec=t, end_sec=t + 0.2, source="measured")
