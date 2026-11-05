@@ -99,6 +99,13 @@ joins:
 
 Design, examples and discussion: [SYSTEM.md](SYSTEM.md), section 5.
 
+`--prompt template` (`caption_prompt.py`) writes the information into the
+prompt itself, before FLORA's instruction: `--brief`, `--objects` (from
+`--scenes`), `--kinematics`, `--previous`, and `--notes` (one line per item on
+how to use it). On the same episodes the previous interval gave the best
+separation (DROID: same operation in 52 % of pairs inside a subtask, 14 %
+across a cut) and a motion-absorbed join of 0.300; SYSTEM.md section 5.6.
+
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 python kinseg/caption_merge.py run --kinematic <run> --videos <dir> \
     --episodes galaxea_002 ... --rounds 1 --background task_brief --robot-state --out <dir>

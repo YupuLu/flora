@@ -563,6 +563,99 @@ single-arm wording ("the gripper") was copied into the captions.
    asked at subtask scale (Q2 (b), Q3 (a)), and the kinematic events should
    enter as proposals, as in the gripper split, rather than only as text.
 
+### 5.6 Our prompt template (2026-11-05)
+
+Sections 5.1-5.5 kept FLORA's prompt and put our text inside its
+episode-instruction JSON line. The template (`caption_prompt.py`,
+`caption_merge.py run --prompt template`) instead writes the information into
+the prompt itself, between the video blocks and FLORA's instruction, and is
+used only by our captioning calls (FLORA's files are unchanged; the
+instruction is read from FLORA's vendored code):
+
+```text
+BEFORE:
+<video>
+
+TARGET:
+<video>
+
+AFTER:
+<video>
+
+Episode information:
+Task brief: Remove the pen from the mug and put it on the table                --brief
+Objects: pen; mug; table                                                       --objects
+Robot kinematics during TARGET: Right hand moves; its gripper is open at the start, then closes.   --kinematics
+Previous interval: "Move the right hand toward the pen in the red cup."        --previous
+Notes: use this information to understand TARGET.                              --notes
+- The task brief is the goal of the whole episode; describe only the step in TARGET.
+- Name objects with the names in the object list.
+- Use the robot kinematics to confirm the action.
+- Stay consistent with the previous interval, or continue from it.
+
+Write one concise, self-contained English instruction … (FLORA's instruction, ending with its output line)
+```
+
+- **Information first, instruction last.** The model reads what it knows
+  before it reads the request, and FLORA's output line stays the last line.
+- **Notes, one line per item, only for the items given.** The key idea is to
+  ask the model to build an understanding of TARGET from the video and the
+  information, not only to see the information.
+- **The context sentence follows the blocks sent** ("Use AFTER only …" with
+  `--context after`; dropped with TARGET alone).
+- **Kinematics in FLORA's words** ("Right hand moves; its gripper …"; a
+  one-armed robot is its right hand), since "the gripper" of section 5's robot
+  state entered the captions.
+- **Objects** are the nouns of the task sentence, extracted once per episode
+  by a Claude Haiku agent (`outputs/kinseg/scenes_from_task/`; substances such
+  as liquid or powder left out). WGO-Bench has no object lists of its own.
+
+Five runs on the same 26 episodes, FLORA's full context, one round. Each adds
+one item to the previous run; kinematics, which matter least, come last.
+
+| Run | Information | Same op. inside / across, Galaxea | DROID | Op. join F1 (pred), Galaxea | DROID | Motion absorbed, Galaxea | DROID |
+|---|---|---:|---:|---:|---:|---:|---:|
+| B_both (field) | task brief + guidance | 0.71 / 0.45 | 0.46 / 0.29 | 0.305 (97) | 0.135 (149) | 0.362 (82) | 0.182 (34) |
+| T1 | brief | 0.70 / 0.45 | 0.42 / 0.33 | 0.287 (100) | 0.100 (157) | 0.331 (84) | 0.182 (34) |
+| T2 | + notes | 0.71 / 0.39 | 0.45 / 0.33 | 0.308 (102) | 0.113 (152) | 0.333 (89) | 0.189 (31) |
+| T3 | + objects | 0.70 / 0.37 | 0.45 / 0.33 | 0.292 (104) | 0.113 (152) | 0.316 (91) | 0.187 (32) |
+| T4 | + previous | 0.74 / 0.34 | **0.52 / 0.14** | 0.287 (100) | 0.143 (139) | 0.327 (92) | **0.300** (37) |
+| T5 | + kinematics | **0.75 / 0.32** | 0.64 / 0.33 | 0.301 (99) | 0.159 (108) | 0.346 (89) | 0.198 (38) |
+
+(TempSeg on these episodes: 0.676 / 0.530; TempSeg + gripper split 0.681 /
+0.587. Task objects are named in 80-81 % of DROID captions in every T run, 78 %
+for B_both.)
+
+- **Template versus field** (T1 against B_both, same information): no gain;
+  the position of the text matters less than its content.
+- **Notes** lower the agreement across Galaxea cuts (0.45 → 0.39) without
+  changing the joins much.
+- **Objects** from the task sentence add nothing beyond the brief, which
+  already contains them.
+- **The previous interval** is the item that helps. With full video context
+  and "stay consistent … or continue from it", DROID's agreement across cuts
+  falls from 0.33 to 0.14, the best separation of any run (inside − across
+  0.38), and DROID's motion-absorbed join reaches 0.300. It rewrites 70 % of
+  the captions, mostly towards consistent wording: in DROID episode 000033 the
+  retreat after the place is "Move the right hand away from the pink and
+  silver measuring spoon on the kitchen counter" five times in T4, where T3
+  alternates put / pick up (once "with the left hand"), and the
+  motion-absorbed join matches both subtasks (T3: one). Section 5's B_prev,
+  which sent the previous caption without BEFORE and only for names,
+  over-split instead.
+- **Kinematics** give Galaxea's best separation (0.75 / 0.32) but raise
+  DROID's agreement across cuts again (0.14 → 0.33).
+- **The joins stay the limit.** The best separations (0.40-0.43 Galaxea, 0.38
+  DROID) still give operation joins of 0.29-0.35 and 0.14-0.30. The errors of
+  T4's operation join: on Galaxea 34 of 54 reference cuts are found, and 15 of
+  the 21 missed ones are a pick-up whose lift or first transport is still
+  called "pick up"; on DROID 18 of 30 are found, with 108 false cuts in 226
+  pairs inside subtasks, mostly between hold, lift, move and scoop. The next
+  step is the join rule (section 8, Q8).
+
+Table: `outputs/kinseg/caption_merge/v3/compare.md`; examples of all nine
+runs: `outputs/kinseg/caption_merge/v3/examples.md`.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -579,6 +672,7 @@ single-arm wording ("the gripper") was copied into the captions.
 | 9 | Captioner per phase, join by operation (leading verb) | 0.303 | 0.120 | verbs drift within a subtask (same verb in 68 % / 55 % of pairs inside a subtask, 40 % / 29 % across a cut) |
 | 10 | TempSeg split where the Captioner's operation changes | 0.320 | 0.128 | the same noise, over-splitting |
 | 11 | Captioner inputs varied (8 variants, 26 episodes; section 5.3); best operation join | 0.362 (TempSeg 0.676) | 0.306 (TempSeg 0.530) | inputs shift agreement inside and across subtasks together |
+| 12 | Our prompt template, 5 runs (26 episodes; section 5.6); best operation join | 0.346 | 0.300 | best separation so far (previous interval), but the join rule wastes it |
 
 Upper bounds (from the references, not methods): keeping exactly the cuts
 nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
@@ -594,9 +688,10 @@ are available; choosing them is the problem.
   Galaxea, 80 of 100 on DROID, within 0.5 s).
 - **Closed**: both directions as tried (section 3): TempSeg cannot be made to
   judge our cuts, and the released models do not judge fragments.
-- **Measured 2026-11-04**: the Captioner's inputs (section 5). Best recipe:
-  FLORA's full video context plus the task brief, with the robot state; still
-  far below TempSeg at fragment scale.
+- **Measured 2026-11-04/05**: the Captioner's inputs (section 5) and our
+  prompt template (5.6). Best recipe: FLORA's full video context, the task
+  brief and the previous interval with notes in our template; still far below
+  TempSeg at fragment scale, now limited by the join rule (Q8).
 - **Nothing is running.** Next steps wait for the decisions in section 8.
 
 ## 8. Open questions
@@ -622,8 +717,13 @@ are available; choosing them is the problem.
   setting) or autolabel's VL pipeline writes the instructions; how are they
   scored (WGO's caption protocol is not implemented yet)?
 - **Q7 Object lists.** The background's scene part (target objects, other
-  objects, workspace) needs per-episode lists that WGO-Bench lacks: write them
-  by hand, have a VL model list them from a frame, or skip them?
+  objects, workspace) needs per-episode lists that WGO-Bench lacks. The nouns
+  of the task sentence (section 5.6) added nothing; lists seen in the video
+  (by a VL model) would be the next option.
+- **Q8 Join rule.** With the better captions of section 5.6, which rule turns
+  them into subtasks: verb classes instead of verbs, objects, gripper events
+  as anchors for the pick-up/place boundary, or a subtask-scale check by the
+  Captioner?
 
 ## 9. Infrastructure
 
@@ -677,6 +777,7 @@ are available; choosing them is the problem.
 | `judge.py` | vision-language same-or-new judge |
 | `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption); join rules; `compare` |
 | `background.py` | the Captioner's background text, after the workspace template |
+| `caption_prompt.py` | our Captioner prompt template (information and notes before FLORA's instruction) |
 | `caption_examples.py` | markdown pages: each run's captions per phase and each method's segments per episode |
 | `local_models.py` | local weight folders, warming, one load at a time, the load retry |
 | `remote/flora-remote` | remote server control |
