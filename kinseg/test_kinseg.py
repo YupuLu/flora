@@ -276,6 +276,30 @@ def test_caption_examples_page():
     assert index["A · operation join"] == "1.00 (2/2/2)"
 
 
+def test_combine_log_answer_and_events():
+    from combine import confirmed_events, episode_log, parse_answer, subtask_ranges
+
+    case = {"instruction": "Move the cup", "references": [],
+            "predictions": [dict(start_sec=0.0, end_sec=1.0, arm="RIGHT", gripper_events=[
+                                dict(arm="RIGHT", kind="close", start_sec=0.5, end_sec=0.7)]),
+                            dict(start_sec=1.0, end_sec=2.0, arm="STABLE", gripper_events=[]),
+                            dict(start_sec=2.0, end_sec=3.0, arm="RIGHT", gripper_events=[
+                                dict(arm="RIGHT", kind="open", start_sec=2.5, end_sec=2.7)])]}
+    phases = [dict(start_s=0.0, end_s=1.0, caption="Pick up the cup."), dict(start_s=1.0, end_s=2.0, caption="Hold it."),
+              dict(start_s=2.0, end_s=3.0, caption="Put the cup down.")]
+    log = episode_log(case, phases)
+    assert "Robot: one arm (right hand)." in log
+    assert "0   0.0-1.0  moves, closes" in log and "1   1.0-2.0  still" in log and "| Put the cup down." in log
+    answer = parse_answer('<think>x</think>```json\n{"gripper": [{"phase": 0, "event": "close", "is": "grasp"},'
+                          ' {"phase": 2, "event": "open", "is": "none"}],'
+                          ' "subtasks": [{"phases": [0, 0], "instruction": "Pick up"}, {"phases": [2, 2]}]}\n```')
+    ranges, repairs = subtask_ranges(answer, 3)
+    assert ranges == [(0, 1, "Pick up"), (2, 2, "")] and repairs == ["gap 1-1 joined to the previous subtask"]
+    assert [e[1] for e in confirmed_events(answer, case, phases)] == ["close"]  # the open did nothing
+    assert parse_answer("no json here") is None
+    assert subtask_ranges({"subtasks": [{"phases": [1, 5]}, {"phases": [0, 2]}]}, 4)[0] == [(0, 2, ""), (3, 3, "")]
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 

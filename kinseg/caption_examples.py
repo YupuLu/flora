@@ -60,8 +60,13 @@ def segment_list(intervals: Sequence[Interval], labels: Sequence[str], hits: set
 
 def episode_page(episode: str, case: Dict[str, object], records: Dict[str, Dict[str, object]],
                  tempseg: Optional[Dict[str, object]], snap, match, full: bool,
-                 video: Optional[str]) -> Tuple[str, Dict[str, str]]:
-    """Markdown of one episode, and its index entries (method -> F1 text)."""
+                 video: Optional[str], combined: Optional[Dict[str, Dict[str, object]]] = None
+                 ) -> Tuple[str, Dict[str, str]]:
+    """Markdown of one episode, and its index entries (method -> F1 text).
+
+    ``combined`` maps a name to one episode's ``combine.py score --segments`` file (C1-C3 and the
+    model's gripper verdicts).
+    """
     refs = [(r["start_sec"], r["end_sec"]) for r in case["references"]]
     ref_labels = [r["subtask"] for r in case["references"]]
     phases = [(p["start_sec"], p["end_sec"]) for p in case["predictions"]]
@@ -119,6 +124,14 @@ def episode_page(episode: str, case: Dict[str, object], records: Dict[str, Dict[
         for join, rule in JOINS.items():
             joined = rule(rec["rounds"][0])
             add(f"{n} · {join}", [(j["start_s"], j["end_s"]) for j in joined], [j["key"] for j in joined])
+    for n, seg in (combined or {}).items():
+        for key, title in (("C1", "model's subtasks"), ("C2", "C1 + confirmed gripper split"),
+                           ("C3", "TempSeg + confirmed gripper split")):
+            add(f"{n} · {key} {title}", [(x["start_s"], x["end_s"]) for x in seg[key]],
+                [x.get("label", "") for x in seg[key]])
+        verdicts = "<br>".join(f"phase {g.get('phase')} {g.get('hand', '')} {g.get('event')}: {g.get('is')}"
+                               for g in seg.get("gripper") or [])
+        lines.append(f"| {n} · gripper verdicts | – | {cell(verdicts) or '(none)'} |")
     return "\n".join(lines) + "\n", index
 
 
@@ -132,6 +145,7 @@ def main(argv=None) -> int:
     ap.add_argument("--shared", action="store_true", help="only episodes every run has")
     ap.add_argument("--videos", help="folder of <episode>.mp4, linked from each episode")
     ap.add_argument("--full", action="store_true", help="print every caption (default: '=' where equal to the first run's)")
+    ap.add_argument("--combined", nargs="+", default=[], help="NAME=DIR segment folders of combine.py score --segments")
     ap.add_argument("--out", required=True, help="markdown file to write")
     args = ap.parse_args(argv)
     if not args.autolabel:
@@ -155,7 +169,9 @@ def main(argv=None) -> int:
         video = None
         if args.videos and (Path(args.videos) / f"{episode}.mp4").exists():
             video = os.path.relpath(Path(args.videos) / f"{episode}.mp4", out.parent.resolve())
-        page, index = episode_page(episode, kin[episode], records, tempseg, snap, match, args.full, video)
+        combined = {n: json.loads((Path(d) / f"{episode}.json").read_text())
+                    for n, d in (c.split("=", 1) for c in args.combined) if (Path(d) / f"{episode}.json").exists()}
+        page, index = episode_page(episode, kin[episode], records, tempseg, snap, match, args.full, video, combined)
         pages.append(page)
         best = max(((v, k) for k, v in index.items() if "·" in k), key=lambda t: float(t[0].split()[0]),
                    default=("–", "–"))
