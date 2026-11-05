@@ -802,6 +802,61 @@ The grouping clause restates v1's second rule; the gripper verdicts return.
 Example pages: `outputs/kinseg/combine/v6_examples.md` (v6 runs 1 and 2, v6
 without the movement line, v1, v5, per episode).
 
+**Annotation conventions: is moving away part of the next action?** Where
+reference cuts sit after the last gripper event (within 3 s), measured on the
+references themselves:
+
+| References | Cut after an open (release) | Cut after a close (grasp) |
+|---|---|---|
+| WGO Galaxea (25 episodes) | median 0.04 s; 16 of 18 within 0.5 s | median 0.44 s |
+| WGO DROID (50) | median 0.52 s (middle half 0.30-1.08 s) | median 1.70 s (command events) |
+| Galaxea Open-World subtasks (415, autolabel's 2026-10-15 run) | median -0.07 s; 97 of 134 within 0.5 s | median 1.33 s |
+| B1K skills (500) | median 1.47 s (middle half 0.87-2.17 s) | median 2.00 s |
+
+Galaxea's annotations (WGO and Open-World) end a place at the release, so
+moving away begins the next subtask; B1K's skills end well after the release,
+so moving away stays with the previous skill. Datasets therefore differ, as
+expected, and where a pick-up ends differs too (WGO Galaxea 0.4 s after the
+grasp, Open-World 1.3 s). On WGO, v6 with the opposite attachment ("moving
+away after an action belongs to the action it follows") falls from 0.511 /
+0.526 to 0.421 on Galaxea and to 0.556 on DROID (0.578 / 0.622): about 0.1 on
+Galaxea for a wrong convention. The attachment should be a per-dataset
+setting, chosen from a few annotated episodes; the measurement above is the
+way to choose it.
+
+**Galaxea boundary placement.** For every internal reference cut, the signed
+offset of the nearest cut (v6 run 1):
+
+| Galaxea, reference cut after | model's cut | our nearest phase cut | TempSeg's nearest cut |
+|---|---|---|---|
+| a close (end of a pick-up), 31 cuts | median +0.26 s, 9 within 0.25 s | -0.25 s, 14 within 0.25 s | +0.29 s, 12 |
+| an open (end of a place), 14 cuts | -0.45 s, 2 | +0.05 s, 6 | +0.26 s, 4 |
+
+The candidates are there; the model picks a neighbouring phase boundary:
+after a grasp it ends the pick-up one phase late, after a release one phase
+early. A kinematic anchor fixes the first: **C5** moves a model cut that lies
+within one phase of a confirmed grasp to the end of the grasp's phase (the
+grasp completes the pick-up), and **C6** snaps C5 to TempSeg's cuts.
+
+| v6, sol | Galaxea C1 / C4 / C5 / **C6** | DROID C1 / C4 / C5 / **C6** |
+|---|---:|---:|
+| run 1 | 0.511 / 0.632 / 0.571 / **0.677** | 0.578 / 0.600 / 0.578 / **0.600** |
+| run 2 | 0.526 / 0.647 / 0.571 / **0.677** | 0.622 / 0.644 / 0.622 / **0.644** |
+
+With C6, Galaxea equals TempSeg (0.676) in both runs and DROID stays above
+TempSeg + gripper split (0.587). Anchoring at releases instead hurts (Galaxea
+0.42-0.45), and with v1's answers the grasp anchor helps Galaxea but costs
+DROID 0.04. The anchor encodes the WGO Galaxea convention (a pick-up ends
+with the grasp), so it belongs with the per-dataset settings.
+
+**Gripper verdicts, redesigned.** Without the verdict question (v6-noverdict)
+the grouping stays within noise (Galaxea 0.478, DROID 0.667); asking instead
+whether a subtask ends or begins at each event (v6-boundary) gives Galaxea
+0.541, DROID 0.533, and its answers do not locate cuts: on Galaxea 21 of 22
+closes called "neither" sit next to a reference cut, and on DROID 11 of 16
+closes called "ends" do not. The grasp/release verdicts stay: they are what
+C5 anchors on, and they reject the two DROID events where nothing was grasped.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
