@@ -311,6 +311,97 @@ def score(args) -> int:
     return 0
 
 
+def examples(args) -> int:
+    """Markdown: per episode, the status log next to each model's subtasks, then the segments."""
+    from caption_examples import cell, f1_text, matched, protocol, segment_list
+    from merge import boundaries, snap
+
+    snap_edges, match = protocol(Path(args.autolabel))
+    kin = load_kinematic(Path(args.kinematic))
+    answers = dict(a.split("=", 1) for a in args.answers)
+    items = {p.stem: json.loads(p.read_text()) for p in sorted(Path(args.prompts).glob("*.json"))}
+    episodes = [e for e in items if not args.episodes or e in args.episodes]
+    episodes.sort(key=lambda e: (items[e]["family"] != "galaxea", e))
+    out = Path(args.out)
+    pages, index = [], []
+    for episode in episodes:
+        item, case = items[episode], kin[episode]
+        phases, robot_hands = item["phases"], hands(case)
+        refs = [(r["start_sec"], r["end_sec"]) for r in case["references"]]
+        ref_labels = [r["subtask"] for r in case["references"]]
+        tempseg = sorted((s["start_s"], s["end_s"]) for s in
+                         json.loads((Path(args.tempseg) / f"{episode}.json").read_text())["segments"])
+        tempseg_cuts = sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]]))
+        columns: Dict[str, List[str]] = {}
+        segment_rows: List[str] = []
+        scores: Dict[str, str] = {}
+
+        def add(name, intervals, labels):
+            hits = matched(intervals, refs, snap_edges, match)
+            scores[name] = f1_text(len(hits), len(intervals), len(refs))
+            segment_rows.append(f"| {name} | {scores[name]} | {segment_list(intervals, labels, hits)} |")
+
+        add("TempSeg", tempseg, [""] * len(tempseg))
+        for name, folder in answers.items():
+            path = Path(folder) / f"{episode}.json"
+            answer = parse_answer(json.loads(path.read_text()).get("answer")) if path.exists() else None
+            ranges = subtask_ranges(answer, len(phases))[0] if answer else []
+            cells = ["(no answer)"] * len(phases)
+            for s, (a, b, label) in enumerate(ranges):
+                for k in range(a, b + 1):
+                    cells[k] = f"**S{s + 1}** {label}" if k == a else "┃"
+            for g in (answer or {}).get("gripper") or []:
+                try:
+                    k = int(g["phase"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if 0 <= k < len(phases):
+                    hand = f"{g.get('hand')} " if len(robot_hands) > 1 else ""
+                    cells[k] += f" · *{hand}{g.get('event')}: {g.get('is')}*"
+            columns[name] = cells
+            c1 = [(phases[a]["start_s"], phases[b]["end_s"]) for a, b, _ in ranges]
+            labels = [label for _, _, label in ranges]
+            if c1:
+                add(f"{name} · subtasks (C1)", c1, labels)
+                add(f"{name} · snapped to TempSeg cuts (C4)", snap(c1, tempseg_cuts, SNAP_S), labels)
+        names = list(columns)
+        lines = [f"## {episode}", "", f"**Task:** {cell(str(case.get('instruction', '')))}  ",
+                 f"{item['family']}, {len(phases)} phases, {len(refs)} reference subtasks", "",
+                 "| # | Time (s) | Robot | Caption | Reference subtask | " + " | ".join(names) + " |",
+                 "|---:|---|---|---|---|" + "---|" * len(names)]
+        previous = None
+        for k, p in enumerate(phases):
+            mid = (p["start_s"] + p["end_s"]) / 2
+            j = next((j for j, (s, e) in enumerate(refs) if s <= mid < e), None)
+            ref = "–" if j is None else (f"▸ {ref_labels[j]}" if j != previous else "┃")
+            previous = j
+            lines.append(f"| {k} | {p['start_s']:.1f}–{p['end_s']:.1f} | {status(case, k, robot_hands)} | "
+                         f"{cell(p.get('caption') or '')} | {cell(ref)} | "
+                         + " | ".join(cell(columns[n][k]) for n in names) + " |")
+        lines += ["", "| Method | F1 (TP/pred/ref) | Segments |", "|---|---:|---|",
+                  f"| reference | – | {segment_list(refs, ref_labels, set())} |"] + segment_rows
+        pages.append("\n".join(lines) + "\n")
+        index.append(f"| [{episode}](#{episode}) | {item['family']} | {len(phases)} | {len(refs)} | "
+                     f"{scores['TempSeg']} | " + " | ".join(
+                         f"{scores.get(f'{n} · subtasks (C1)', '–')} / {scores.get(f'{n} · snapped to TempSeg cuts (C4)', '–')}"
+                         for n in names) + " |")
+    names = list(answers)
+    header = ["# How the combination works: examples", "",
+              "Each episode shows the status log the model reads (time, robot, caption; one line per phase), "
+              "the reference subtasks (not shown to the model), and each model's answer: **S*n*** starts a "
+              "subtask with its instruction, ┃ continues it, and *close: grasp* is the model's verdict on a "
+              "gripper event. Below, the segments: the model's subtasks (C1) and the same with each endpoint "
+              f"moved to TempSeg's nearest cut within {SNAP_S:g} s (C4); ✓ marks a segment matched to a "
+              "reference (F1@0.75, WGO protocol).", "",
+              "The instruction after the log, the same for every episode:", "", "```text", INSTRUCTION, "```", "",
+              "| Episode | Family | Phases | Subtasks | TempSeg | " + " | ".join(f"{n} C1 / C4" for n in names) + " |",
+              "|---|---|---:|---:|---:|" + "---:|" * len(names)] + index + [""]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(header) + "\n" + "\n".join(pages))
+    print(f"wrote {out} ({len(pages)} episodes)")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
@@ -337,10 +428,18 @@ def main(argv=None) -> int:
     s.add_argument("--tempseg", required=True)
     s.add_argument("--segments", help="also write each answer's segments here, per source and episode")
     s.add_argument("--out")
+    e = sub.add_parser("examples", help="markdown: the log next to each model's subtasks, and the segments")
+    e.add_argument("--prompts", required=True)
+    e.add_argument("--answers", nargs="+", required=True, help="NAME=DIR answer folders")
+    e.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"))
+    e.add_argument("--kinematic", required=True)
+    e.add_argument("--tempseg", required=True)
+    e.add_argument("--episodes", nargs="+", help="only these episodes")
+    e.add_argument("--out", required=True)
     args = ap.parse_args(argv)
-    if args.command in ("ask", "score") and not args.autolabel:
+    if args.command in ("ask", "score", "examples") and not args.autolabel:
         ap.error("give --autolabel or set AUTOLABEL_ROOT")
-    return {"prompts": prompts, "ask": ask, "score": score}[args.command](args)
+    return {"prompts": prompts, "ask": ask, "score": score, "examples": examples}[args.command](args)
 
 
 if __name__ == "__main__":
