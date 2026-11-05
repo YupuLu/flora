@@ -2,13 +2,14 @@
 
 After captioning (``caption_merge.py run``), each episode becomes a text log, one line per phase: its
 time, the hands' motion and gripper changes measured from the robot, and the phase's caption. A
-language model groups consecutive phases into subtasks and says, for every gripper close and open,
-whether it grasped or released an object. The answer is checked and turned into segments:
+language model groups consecutive phases into subtasks (with instruction ``v1`` it also says, for every
+gripper close and open, whether it grasped or released an object). The answer is checked and turned into
+segments:
 
 * C1: the model's subtasks;
-* C2: C1, then split where a confirmed grasp is followed by a confirmed release of the same hand inside
-  one subtask (``merge.split_at_grasps``, at our first cut after the close);
-* C3: TempSeg's segments with the same split from confirmed events only (the gripper split of
+* C2 (v1): C1, then split where a confirmed grasp is followed by a confirmed release of the same hand
+  inside one subtask (``merge.split_at_grasps``, at our first cut after the close);
+* C3 (v1): TempSeg's segments with the same split from confirmed events only (the gripper split of
   ``merge.py`` uses every event);
 * C4: C1 with each endpoint moved to TempSeg's nearest cut within ``SNAP_S`` (the model's grouping
   with TempSeg's boundary placement, which is closer to the references than our phase cuts).
@@ -39,7 +40,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SNAP_S = 1.0
 SYSTEM = "You combine short phases of a robot demonstration into subtasks. Answer in JSON only."
-INSTRUCTION = """Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own (pick up an object, place it, pour, open or close something, push, wipe ...).
+STEP = ("Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its "
+        "own (pick up an object, place it, pour, open or close something, push, wipe ...).")
+INSTRUCTIONS = {
+    # v1 (2026-11-05): conventions read off WGO-Bench's references, and gripper verdicts.
+    "v1": STEP + """
 - Reaching for an object belongs to the step that acts on it; carrying a held object belongs to the step that puts it down; moving away after a release belongs to the next step.
 - Different words for one movement ("lift", "move", "put") do not start a new step by themselves.
 - For each gripper close or open in the log, decide from the instructions whether it grasped an object, released one, or did neither.
@@ -47,7 +52,27 @@ INSTRUCTION = """Combine consecutive phases into subtasks: one manipulation step
 Answer in JSON only:
 {"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "is": "grasp", "release" or "none"}, ...],
  "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
+List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once.""",
+    # v2: no task-specific conventions; captions can be wrong or discontinuous; kinematics support the
+    # captions; subtasks only.
+    "v2": STEP + """
+- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
+- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
+
+Answer in JSON only:
+{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+The subtasks cover every phase from 0 to the last, in order, each phase once.""",
+    # v3: v2 with FLORA-TempSeg's own granularity policy (its prompt) in place of our conventions.
+    "v3": STEP + """
+- Acquisition and delivery are distinct when observable. Ordinary contacts, adjustments and low-motion pauses within the same ongoing goal do not create new subtasks.
+- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
+- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
+
+Answer in JSON only:
+{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+The subtasks cover every phase from 0 to the last, in order, each phase once.""",
+}
+INSTRUCTION = INSTRUCTIONS["v1"]
 
 
 def hands(case: Dict[str, object]) -> Tuple[str, ...]:
@@ -73,8 +98,8 @@ def status(case: Dict[str, object], k: int, robot_hands: Sequence[str]) -> str:
     return ", ".join([motion] + changes)
 
 
-def episode_log(case: Dict[str, object], phases: List[Dict[str, object]]) -> str:
-    """The user prompt for one episode: task, robot, phase log and instruction."""
+def episode_log(case: Dict[str, object], phases: List[Dict[str, object]], version: str = "v1") -> str:
+    """The user prompt for one episode: task, robot, phase log and instruction ``version``."""
     robot_hands = hands(case)
     lines = [f"Task: {str(case.get('instruction', '')).strip()}",
              "Robot: " + ("one arm (right hand)." if len(robot_hands) == 1 else "two arms (left and right hands)."),
@@ -85,7 +110,7 @@ def episode_log(case: Dict[str, object], phases: List[Dict[str, object]]) -> str
         caption = (p.get("caption") or "").strip() if p.get("status", "complete") == "complete" else ""
         lines.append(f"{k:<3d} {p['start_s']:.1f}-{p['end_s']:.1f}  {status(case, k, robot_hands):<24} | "
                      f"{caption or '(no caption)'}")
-    return "\n".join(lines + ["", INSTRUCTION])
+    return "\n".join(lines + ["", INSTRUCTIONS[version]])
 
 
 def parse_answer(text: Optional[str]) -> Optional[dict]:
@@ -189,10 +214,11 @@ def prompts(args) -> int:
         rec = json.loads((Path(args.captions) / f"{episode}.json").read_text())
         phases = [dict(start_s=p["start_s"], end_s=p["end_s"], caption=p.get("caption", ""), status=p.get("status"))
                   for p in rec["rounds"][0]]
-        prompt = episode_log(kin[episode], phases)
+        prompt = episode_log(kin[episode], phases, args.version)
         (out / f"{episode}.json").write_text(json.dumps(dict(id=episode, family=kin[episode]["family"],
                                                              captions=str(args.captions), system=SYSTEM,
-                                                             prompt=prompt, phases=phases), indent=1) + "\n")
+                                                             version=args.version, prompt=prompt, phases=phases),
+                                                        indent=1) + "\n")
         (out / f"{episode}.txt").write_text(f"SYSTEM: {SYSTEM}\n\n{prompt}\n")
     print(f"wrote {len(episodes)} prompts to {out}")
     return 0
@@ -277,8 +303,9 @@ def score(args) -> int:
             c3 = split_at_grasps(tempseg, confirmed, cuts)
             c4 = snap(c1, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
             row.setdefault("C1 model's subtasks", []).append(case_of(c1, refs))
-            row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
-            row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
+            if item.get("version", "v1") == "v1":  # gripper verdicts asked for
+                row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
+                row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
             row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
                               events=len(gripper_events(case))))
@@ -393,7 +420,8 @@ def examples(args) -> int:
               "gripper event. Below, the segments: the model's subtasks (C1) and the same with each endpoint "
               f"moved to TempSeg's nearest cut within {SNAP_S:g} s (C4); ✓ marks a segment matched to a "
               "reference (F1@0.75, WGO protocol).", "",
-              "The instruction after the log, the same for every episode:", "", "```text", INSTRUCTION, "```", "",
+              "The instruction after the log, the same for every episode:", "", "```text",
+              INSTRUCTIONS[next(iter(items.values())).get("version", "v1")], "```", "",
               "| Episode | Family | Phases | Subtasks | TempSeg | " + " | ".join(f"{n} C1 / C4" for n in names) + " |",
               "|---|---|---:|---:|---:|" + "---:|" * len(names)] + index + [""]
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -408,6 +436,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("prompts", help="one status-log prompt per episode")
     p.add_argument("--captions", required=True, help="caption_merge.py run output folder")
     p.add_argument("--kinematic", required=True)
+    p.add_argument("--version", choices=sorted(INSTRUCTIONS), default="v2", help="instruction after the log")
     p.add_argument("--out", required=True)
     a = sub.add_parser("ask", help="answers from a provider of autolabel's VL client")
     a.add_argument("--prompts", required=True)

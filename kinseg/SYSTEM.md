@@ -722,6 +722,26 @@ autolabel's VL client, and Claude Haiku as a subagent.
 - **Caveat.** The prompt's conventions and the 1 s snap were chosen with these
   26 episodes in view; the remaining 49 episodes are the check (Q5).
 
+**Instruction ablation** (sol; the log is unchanged, only the text after it):
+
+| Instruction | Galaxea C1 / C4 | DROID C1 / C4 |
+|---|---:|---:|
+| v1: our conventions (reach, carry and retreat; word variants) + gripper verdicts | 0.356 / 0.521 | 0.574 / 0.596 |
+| v2: no conventions; "some captions may be wrong … discontinuous"; kinematics support the captions; subtasks only | 0.277 / 0.453 | 0.505 / 0.465 |
+| v3: v2 + FLORA-TempSeg's own granularity policy ("Acquisition and delivery are distinct when observable. Ordinary contacts, adjustments and low-motion pauses within the same ongoing goal do not create new subtasks.") | 0.331 / 0.510 | 0.556 / 0.556 |
+
+v2 mostly keeps v1's grouping (equal matches in 24 of 26 episodes) and drops
+the extra edge segments, but without a granularity rule it chooses its own
+granularity: in Galaxea 002 each pick-and-place becomes one "move the pink
+cylinder from … to …" (11 segments for 17 subtasks, no match; v1 7), and in
+DROID 000061 caption noise splits two scoops into 14 steps. v3 takes the
+granularity sentence from FLORA's TempSeg prompt rather than from WGO's
+references and recovers most of v1 (Galaxea 002: 19 segments; DROID 000061:
+6). Single runs; sol's own repeatability on autolabel's describe task was
+about 86 %, so differences of a few hundredths are noise. GPT-6-luna and
+Haiku under v2: 0.189 / 0.284 and 0.101 / 0.203 (Galaxea), 0.241 / 0.241 and
+0.128 / 0.156 (DROID).
+
 Answers, segments, table and examples: `outputs/kinseg/combine/T4/`
 (`examples.md` shows each model's subtasks and verdicts per episode).
 
