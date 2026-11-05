@@ -656,6 +656,75 @@ for B_both.)
 Table: `outputs/kinseg/caption_merge/v3/compare.md`; examples of all nine
 runs: `outputs/kinseg/caption_merge/v3/examples.md`.
 
+### 5.7 A language model combines the captions (2026-11-05)
+
+The joins of 5.1-5.6 compare neighbouring captions word by word. Here a
+language model reads the whole episode as a short status log and combines the
+phases itself (`combine.py`). It sees no video, only text.
+
+```text
+Task: Remove the pen from the mug and put it on the table
+Robot: one arm (right hand).
+
+Phases. Time in seconds; hand motion and gripper changes are measured from the robot; each instruction
+was written by a video captioner for that phase alone and can be wrong.
+0   0.0-1.4   still           | Keep both hands clear of the mug.
+3   3.3-7.2   moves, closes   | Move the right hand toward the pen in the red cup.
+4   7.2-8.1   moves           | Pick up the pen from the red cup with the right hand.
+5   8.1-8.6   moves           | Lift the pen out of the red cup with the right hand.
+…
+8   11.4-12.6 moves, opens    | Move the right hand away from the pen and red cup.
+
+Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own
+(pick up an object, place it, pour, open or close something, push, wipe ...).
+- Reaching for an object belongs to the step that acts on it; carrying a held object belongs to the step
+  that puts it down; moving away after a release belongs to the next step.
+- Different words for one movement ("lift", "move", "put") do not start a new step by themselves.
+- For each gripper close or open in the log, decide from the instructions whether it grasped an object,
+  released one, or did neither.
+Answer in JSON only: {"gripper": [...], "subtasks": [{"phases": [first, last], "instruction": ...}, ...]}
+```
+
+The answer is checked (phases in order, each once; nothing needed repair in
+78 answers) and scored four ways: C1 the model's subtasks; C2 C1 split where a
+confirmed grasp and a later confirmed release of the same hand share a
+subtask; C3 TempSeg with that split; C4 C1 with each endpoint moved to
+TempSeg's nearest cut within 1 s. Captions: T4 (5.6). Models: GPT-6.1-sol
+(`openlux-codex-gpt-1`, about 8 s per episode) and GPT-6-luna
+(`openlux-azure-gpt-2`, 12 s, about 1,000 reasoning tokens) through
+autolabel's VL client, and Claude Haiku as a subagent.
+
+| F1@0.75 (pred/ref) | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg | 0.676 (72/67) | 0.530 (40/43) |
+| TempSeg + gripper split | 0.681 (74/67) | 0.587 (49/43) |
+| T4 captions, motion-absorbed join | 0.327 (92/67) | 0.300 (37/43) |
+| sol C1, the model's subtasks | 0.356 (79/67) | **0.574** (51/43) |
+| sol C4, C1 snapped to TempSeg cuts | 0.521 (79/67) | **0.596** (51/43) |
+| luna C1 / C4 | 0.248 / 0.353 | 0.247 / 0.272 |
+| haiku C1 / C4 | 0.155 / 0.211 | 0.145 / 0.145 |
+
+- **GPT-6.1-sol groups the phases far better than any join rule.** On DROID
+  it matches TempSeg + gripper split from the captions alone (C1 0.574), and
+  with TempSeg's boundary placement it is the best DROID result so far (C4
+  0.596). Luna, despite its reasoning, and Haiku group much worse.
+- **On Galaxea the grouping is mostly right and the boundaries are not.** Of
+  sol's 79 Galaxea segments, 26 match and 32 more overlap a reference with
+  tIoU 0.5-0.75: the cut sits on our phase boundary, often about 0.5 s from
+  the reference (pick-ups end during the lift, after our cut at the grasp).
+  Snapping to TempSeg's cuts recovers part of it (0.356 → 0.521). An extra
+  segment at an episode's start or end ("Return the right hand to its
+  original position") costs about one match in several episodes.
+- **The gripper verdicts add nothing yet.** Sol confirms 58 of 58 Galaxea and
+  40 of 42 DROID events, so C2 equals C1 and C3 equals the gripper split up to
+  two events. The two it rejected (DROID 000037, a closed gripper pushing a
+  drawer) were real subtask boundaries although nothing was grasped.
+- **Caveat.** The prompt's conventions and the 1 s snap were chosen with these
+  26 episodes in view; the remaining 49 episodes are the check (Q5).
+
+Answers, segments, table and examples: `outputs/kinseg/combine/T4/`
+(`examples.md` shows each model's subtasks and verdicts per episode).
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -673,6 +742,7 @@ runs: `outputs/kinseg/caption_merge/v3/examples.md`.
 | 10 | TempSeg split where the Captioner's operation changes | 0.320 | 0.128 | the same noise, over-splitting |
 | 11 | Captioner inputs varied (8 variants, 26 episodes; section 5.3); best operation join | 0.362 (TempSeg 0.676) | 0.306 (TempSeg 0.530) | inputs shift agreement inside and across subtasks together |
 | 12 | Our prompt template, 5 runs (26 episodes; section 5.6); best operation join | 0.346 | 0.300 | best separation so far (previous interval), but the join rule wastes it |
+| 13 | GPT-6.1-sol combines T4's captions from a status log (26 episodes; 5.7), snapped to TempSeg cuts | 0.521 (TempSeg 0.676) | **0.596** (TempSeg 0.530, + gripper split 0.587) | Galaxea: right grouping, boundaries on our cuts ~0.5 s off |
 
 Upper bounds (from the references, not methods): keeping exactly the cuts
 nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
@@ -778,6 +848,7 @@ are available; choosing them is the problem.
 | `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption); join rules; `compare` |
 | `background.py` | the Captioner's background text, after the workspace template |
 | `caption_prompt.py` | our Captioner prompt template (information and notes before FLORA's instruction) |
+| `combine.py` | a language model combines captioned phases from a status log; scores C1-C4 |
 | `caption_examples.py` | markdown pages: each run's captions per phase and each method's segments per episode |
 | `local_models.py` | local weight folders, warming, one load at a time, the load retry |
 | `remote/flora-remote` | remote server control |

@@ -126,7 +126,9 @@ def episode_page(episode: str, case: Dict[str, object], records: Dict[str, Dict[
             add(f"{n} · {join}", [(j["start_s"], j["end_s"]) for j in joined], [j["key"] for j in joined])
     for n, seg in (combined or {}).items():
         for key, title in (("C1", "model's subtasks"), ("C2", "C1 + confirmed gripper split"),
-                           ("C3", "TempSeg + confirmed gripper split")):
+                           ("C3", "TempSeg + confirmed gripper split"), ("C4", "C1 snapped to TempSeg cuts")):
+            if key not in seg:
+                continue
             add(f"{n} · {key} {title}", [(x["start_s"], x["end_s"]) for x in seg[key]],
                 [x.get("label", "") for x in seg[key]])
         verdicts = "<br>".join(f"phase {g.get('phase')} {g.get('hand', '')} {g.get('event')}: {g.get('is')}"

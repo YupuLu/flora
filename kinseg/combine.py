@@ -9,7 +9,9 @@ whether it grasped or released an object. The answer is checked and turned into 
 * C2: C1, then split where a confirmed grasp is followed by a confirmed release of the same hand inside
   one subtask (``merge.split_at_grasps``, at our first cut after the close);
 * C3: TempSeg's segments with the same split from confirmed events only (the gripper split of
-  ``merge.py`` uses every event).
+  ``merge.py`` uses every event);
+* C4: C1 with each endpoint moved to TempSeg's nearest cut within ``SNAP_S`` (the model's grouping
+  with TempSeg's boundary placement, which is closer to the references than our phase cuts).
 
     python kinseg/combine.py prompts --captions <caption run> --kinematic <run> --out <dir>
     python kinseg/combine.py ask --prompts <dir> --provider openlux-codex-gpt-1 --autolabel <checkout> --out <dir>
@@ -35,6 +37,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+SNAP_S = 1.0
 SYSTEM = "You combine short phases of a robot demonstration into subtasks. Answer in JSON only."
 INSTRUCTION = """Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own (pick up an object, place it, pour, open or close something, push, wipe ...).
 - Reaching for an object belongs to the step that acts on it; carrying a held object belongs to the step that puts it down; moving away after a release belongs to the next step.
@@ -226,7 +229,7 @@ def ask(args) -> int:
 
 def score(args) -> int:
     from caption_merge import join_operations, limb_motion, motion_only
-    from merge import boundaries, gripper_events, scorer, split_at_grasps
+    from merge import boundaries, gripper_events, scorer, snap, split_at_grasps
 
     score_family = scorer(Path(args.autolabel))
     kin = load_kinematic(Path(args.kinematic))
@@ -272,9 +275,11 @@ def score(args) -> int:
             confirmed = confirmed_events(answer, case, phases) if answer else []
             c2 = split_at_grasps(c1, confirmed, cuts)
             c3 = split_at_grasps(tempseg, confirmed, cuts)
+            c4 = snap(c1, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
             row.setdefault("C1 model's subtasks", []).append(case_of(c1, refs))
             row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
             row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
+            row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
                               events=len(gripper_events(case))))
             if repairs:
@@ -284,6 +289,7 @@ def score(args) -> int:
                 (seg_root / name / f"{episode}.json").write_text(json.dumps(dict(
                     id=episode, C1=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c1, labels)],
                     C2=[dict(start_s=a, end_s=b) for a, b in c2], C3=[dict(start_s=a, end_s=b) for a, b in c3],
+                    C4=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c4, labels)],
                     confirmed=[dict(arm=e[0], kind=e[1], start_sec=e[2]) for e in confirmed],
                     gripper=(answer or {}).get("gripper"), repairs=repairs), indent=1) + "\n")
     lines = ["| Source | Family | Method | F1@0.75 | pred/ref | Answers / repaired / events confirmed |",
