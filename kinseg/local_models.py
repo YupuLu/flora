@@ -174,21 +174,31 @@ def load(session, kind: str, attempts: int = 3, wait_s: float = 60.0, model_dir:
          lock_file: Optional[Path] = None):
     """``session.load(kind)`` after waiting for GPU memory, alone on the machine, with warmed files.
 
-    Only the timestamp failure of FLORA's integrity check is retried.
+    The memory is checked again once the lock is held, as a load that held it may have taken the memory
+    found free before; without enough, the lock is released and the wait starts again. Only the timestamp
+    failure of FLORA's integrity check is retried.
     """
     model_dir = model_dir or _PATHS.get(kind)
-    wait_for_memory(kind)
-    with one_load_at_a_time(lock_file):
-        if model_dir is not None:
-            warm(Path(model_dir))
-        for attempt in range(1, attempts + 1):
-            try:
-                return session.load(kind)
-            except RuntimeError as exc:
-                if WARMING_MESSAGE not in str(exc) or attempt == attempts:
-                    raise
-                print(f"{kind}: model files changed while being verified (attempt {attempt}); retrying in "
-                      f"{wait_s:g} s", flush=True)
-                time.sleep(wait_s)
-                if model_dir is not None:
-                    warm(Path(model_dir))
+    while True:
+        wait_for_memory(kind)
+        with one_load_at_a_time(lock_file):
+            if enough_memory(kind, free_gib()):
+                return _load_locked(session, kind, attempts, wait_s, model_dir)
+        print(f"{kind}: the memory was taken by another load; waiting again", flush=True)
+
+
+def _load_locked(session, kind: str, attempts: int, wait_s: float, model_dir: Optional[Path]):
+    """The load itself, with the lock held: warm the files, then load, retrying the integrity-check failure."""
+    if model_dir is not None:
+        warm(Path(model_dir))
+    for attempt in range(1, attempts + 1):
+        try:
+            return session.load(kind)
+        except RuntimeError as exc:
+            if WARMING_MESSAGE not in str(exc) or attempt == attempts:
+                raise
+            print(f"{kind}: model files changed while being verified (attempt {attempt}); retrying in "
+                  f"{wait_s:g} s", flush=True)
+            time.sleep(wait_s)
+            if model_dir is not None:
+                warm(Path(model_dir))

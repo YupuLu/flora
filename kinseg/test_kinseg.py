@@ -98,6 +98,7 @@ def test_load_retries_only_the_warming_failure(monkeypatch, tmp_path):
     import local_models
 
     monkeypatch.setattr(local_models, "wait_for_memory", lambda kind: None)
+    monkeypatch.setattr(local_models, "free_gib", lambda: [80.0, 80.0])
     monkeypatch.setattr(local_models, "load", functools.partial(local_models.load, lock_file=tmp_path / "lock"))
 
     class Session:
@@ -116,6 +117,21 @@ def test_load_retries_only_the_warming_failure(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="failed its integrity check"):
         local_models.load(corrupt, "captioner", wait_s=0)
     assert corrupt.calls == 1
+
+
+def test_load_checks_memory_again_under_the_lock(monkeypatch, tmp_path):
+    import local_models
+
+    waits, free = [], iter([[10.0, 10.0], [80.0, 80.0]])   # taken by another load, then free again
+    monkeypatch.setattr(local_models, "wait_for_memory", lambda kind: waits.append(kind))
+    monkeypatch.setattr(local_models, "free_gib", lambda: next(free))
+
+    class Session:
+        def load(self, kind):
+            return ("model", "proc")
+
+    assert local_models.load(Session(), "captioner", lock_file=tmp_path / "lock") == ("model", "proc")
+    assert waits == ["captioner", "captioner"]
 
 
 def test_one_load_at_a_time(tmp_path):
