@@ -1413,7 +1413,7 @@ stable, and luna stays far behind, as with v1 and v2.
 **Where the reference cuts lie in our phases.** For every internal
 reference cut of all 75 episodes, the phase boundaries just before and after
 it, and what placing every cut on one of them costs when the grouping is
-perfect (`outputs/kinseg/combine/`, analysis script in the job notes):
+perfect (`kinseg/cut_ceiling.py`):
 
 | | Galaxea (98 cuts) | DROID (100 cuts) |
 |---|---:|---:|
