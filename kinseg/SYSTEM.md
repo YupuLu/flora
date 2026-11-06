@@ -1577,6 +1577,115 @@ Whole-phase regions over-forgive on DROID, whose phases run up to 13.8 s.
   half of the answers (v6's own two runs agree in 24 of 26 episodes, v6 and
   v6-free in 13-15, v6 and v7 in 13-17).
 
+### 5.11 Our collected data: Nero Dog (2026-11-06)
+
+The pipeline on our own robot data, next to FLORA's run on the same demos.
+There are no reference labels, so the comparison is by watching the review
+videos; the numbers below are counts, not scores.
+
+**Data.** Nero Dog: a wheeled base with two Nero arms, no torso, LeRobot
+v2.1 at 15 Hz, a main camera (`camera_1`) and two wrist cameras. FLORA's
+seven-task pilot (`20261105_seven_tasks_10_each`, 70 demos, 53 min) chose 10
+demos per task; we took the first three of each task (21 demos, 16.5 min):
+
+| Task (dataset) | Task sentence |
+|---|---|
+| door_enter, door_exit (`/cfs/nero_dog_open_the_door`) | open the door and enter / exit |
+| put_bag (`/cfs/nero_dog_put_down_bag_manner`) | enter the room and put down the bag on the table |
+| grasp_water, move_water, place_water, give_water (`/cfs/nero_dog_take_out_water`) | grasp water bottle from table / move the water bottle / place water bottle on table / give water bottle to person |
+
+**Does the data support the pipeline?** Yes. `observation.state` has per arm
+the TCP position in the base frame, the joints and the gripper, and the base
+velocity; `nero.py` turns them into autolabel's trajectory (base pose
+integrated from the velocity, as for Galaxea's chassis commands).
+- Settings `nero_dog.toml`: autolabel's `full_body` reference, **speed mode
+  1**, gripper opening 0 closed to 1 open (about 0.2 while holding a bottle),
+  torso fallback off. Mode 1 gives phases of median 1.9-2.7 s, finer than the
+  actions; mode 2 halves them (1.1-1.3 s, up to 50 phases per demo) with the
+  same gripper events; mode 0 (3 s smoothing) risks merging short actions
+  (give_water clips are 4-13 s). Phase counts per mode are in README.md.
+- The water and bag robots' gripper state reads 1.00 for 1-3 frames between
+  closed values now and then; `despike` removes these (343 frames in 70
+  demos), each of which otherwise made a false open-close pair.
+- The door robot's gripper reads 0-0.024; in the one enter demo checked, the
+  fingers stay together in the wrist video throughout, so door demos have no
+  gripper events and are segmented on arm and base motion only.
+
+**Pipeline** (each step as on WGO, with what is new for this robot):
+1. kinematic phases, mode 1 (`nero.py`);
+2. Captioner per phase with template T4 (task brief, objects of the task
+   sentence by Claude Haiku, previous instruction, notes), **three cameras**:
+   FLORA's own three-camera path (`caption_three`: its plans, the mosaic of
+   main camera above and wrists below, its input geometry) with our template
+   (`caption_prompt.build_three`). Before the first caption of each round the
+   message without our information is checked to equal FLORA's three-camera
+   text;
+3. gpt-6.1-sol combines the captions with instruction v6; the status log now
+   says `base moves` for phases where the base drives, and `on a mobile
+   base` in the robot line (fixed-base logs are unchanged: the 75 WGO v6
+   prompts regenerate identically);
+4. `combine.py segments`: C1 (the model's subtasks) and C5 (grasp anchors),
+   with the model's instructions.
+
+FLORA's run: TempSeg + Captioner, task brief, the same three cameras.
+
+**Counts** (per demo, in the order of `jobs3.jsonl`):
+
+| Task | Demo length (s) | Our phases | Our subtasks (C1) | FLORA segments |
+|---|---|---|---|---|
+| door_enter | 46 / 50 / 38 | 12 / 10 / 7 | 2 / 2 / 2 | 1 / 4 / 2 |
+| door_exit | 84 / 73 / 59 | 25 / 24 / 17 | 4 / 6 / 4 | 2 / 2 / 3 |
+| give_water | 10 / 13 / 7 | 6 / 5 / 3 | 1 / 1 / 1 | 2 / 3 / 2 |
+| grasp_water | 46 / 26 / 33 | 15 / 10 / 7 | 3 / 2 / 4 | 4 / 3 / 3 |
+| move_water | 88 / 83 / 90 | 27 / 23 / 27 | 3 / 7 / 3 | 5 / 4 / 4 |
+| place_water | 25 / 21 / 25 | 10 / 7 / 8 | 2 / 2 / 3 | 3 / 4 / 4 |
+| put_bag | 49 / 67 / 57 | 16 / 17 / 15 | 2 / 3 / 3 | 3 / 1 / 1 |
+
+Both give 60 segments in total, placed differently. Cost: 342 Captioner calls
+(291 phases, then re-captioned joins) in 61 min on one GPU pair, about 3.7 min
+per minute of video (each call about 6-10 s with 8-17 k input tokens from the
+three-camera mosaic); FLORA's Captioner took 12.4 min on these demos
+(TempSeg not counted). The combination is 21 text-only calls.
+
+**What the lists show** (to be checked in the videos):
+- Where FLORA has one long segment, ours often splits it: door_exit gets
+  "Move up to the door", "Open the door with the left hand", "Push the door
+  farther open with the right hand", "Move through the open door", where
+  FLORA has "Open the door with the left hand" for 0-69.5 s; in two of three
+  put_bag demos FLORA has a single segment for the whole demo, ours three
+  (push the door open or pick up the bag / enter carrying the bag / place the
+  bag). FLORA splits more in grasp_water and give_water.
+- Driving before an action is handled inconsistently by both: a drive at the
+  start is its own segment in 8 of the 18 demos besides give_water for ours
+  and in 9 for FLORA (counted from the instructions). v6's movement line speaks of arm
+  movement, and the model sometimes merges the drive into the next action
+  (all three door_enter demos: "Approach the door and open it with the left
+  hand"; grasp_water_015c: "Pick up the front-right water bottle" over
+  0-28.5 s, of which 14 s is driving) and sometimes keeps it apart (door_exit:
+  "Move up to the door"; put_bag: "Enter the room while carrying the bag"). A
+  line for base motion in the instruction would decide this; v6 is unchanged
+  here.
+- Caption errors pass through: in grasp_water_015c the phases where the left
+  gripper opens to take the second bottle are captioned "Put the water bottle
+  upright on the table ... with the left hand", and the model keeps a "Place
+  the bottle held in the left hand" subtask (26.9-31.8 s) although that hand
+  held nothing.
+- give_water clips (4-13 s) are one subtask in ours ("Give the water bottle
+  to the person with the right hand"); FLORA splits offer and release.
+- C5 differs from C1 in 2 of 21 demos, and in grasp_water_611b it is wrong:
+  the right hand's grasp lies one phase from both the cut before it and the
+  cut after it, the tie picks the earlier one, and the grasp joins "Move up to
+  the table". The review therefore shows C1. (The tie never mattered on WGO,
+  where the subtask before a grasp is its reach.)
+
+**Review.** `outputs/kinseg/nero/review_v6_C1/index.html` (copied from the
+remote's `/cfs/users/yplu/kinseg/nero/review_v6_C1/`): per demo a video in the
+layout of FLORA's review videos (main camera; the right panel shows the
+current phase's arm and base motion and gripper events; the footer shows our
+current subtask above FLORA's; three time lines below: our phases, our
+subtasks, FLORA's segments, with a cursor), both segment lists, and our
+per-phase captions.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -1680,6 +1789,9 @@ All values below are from `combine.py score` (`outputs/kinseg/combine/*/score*.m
   prompt template (5.6). Best recipe: FLORA's full video context, the task
   brief and the previous interval with notes in our template; still far below
   TempSeg at fragment scale, now limited by the join rule (Q8).
+- **Our own data** (2026-11-06, §5.11): the pipeline runs on Nero Dog (wheeled
+  base, two arms, three cameras) with speed mode 1 and the Captioner on
+  FLORA's three-camera mosaic; 21 demos rendered next to FLORA's run for review.
 - **Nothing is running.** Next steps wait for the decisions in section 8.
 
 ## 8. Open questions
@@ -1763,13 +1875,15 @@ All values below are from `combine.py score` (`outputs/kinseg/combine/*/score*.m
 | `decoding.py`, `check_decoding.py` | greedy decoding with whole-value choices; equivalence check |
 | `merge.py`, `beliefs.py` | post-hoc combinations; TempSeg beliefs at our cuts |
 | `judge.py` | vision-language same-or-new judge |
-| `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption); join rules; `compare` |
+| `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption; one camera or FLORA's three); join rules; `compare` |
 | `background.py` | the Captioner's background text, after the workspace template |
 | `caption_prompt.py` | our Captioner prompt template (information and notes before FLORA's instruction) |
-| `combine.py` | a language model combines captioned phases from a status log; scores C1-C6 |
+| `combine.py` | a language model combines captioned phases from a status log; scores C1-C8; `segments` without references |
 | `prompts/combine/<version>.txt` | the combination instructions, one file per version (`prompts --version` / `--instruction`) |
 | `transition_eval.py` | WGO scoring with free movements next to reference cuts forgiven (convention-free view) |
 | `caption_examples.py` | markdown pages: each run's captions per phase and each method's segments per episode |
 | `local_models.py` | local weight folders, warming, one load at a time, the load retry |
 | `remote/flora-remote` | remote server control |
+| `nero.py`, `nero_dog.toml` | kinematic phases of our Nero Dog data (full_body settings, speed mode 1) |
+| `nero_review.py` | review videos and page: our subtasks next to FLORA's (§5.11) |
 | `test_kinseg.py` | CPU tests |

@@ -130,7 +130,23 @@ opening 0 closed to 1 open, no torso). Jobs are the FLORA run's
 ```bash
 python kinseg/nero.py --autolabel <checkout> --jobs <run>/selection.json \
     --source outputs/kinseg/nero/source --out outputs/kinseg/nero/kinematic_mode1
+# Captioner per phase, three cameras (jobs: FLORA annotation JSONL with left_wrist / right_wrist), template T4
+CUDA_VISIBLE_DEVICES=6,7 python kinseg/caption_merge.py run --kinematic <kinematic> --jobs jobs3.jsonl \
+    --episodes <ids> --profile yam --prompt template --brief --objects --previous --notes \
+    --scenes <scenes> --out <captions>
+# combination by gpt-6.1-sol (v6), then C1 / C5 with the model's instructions
+python kinseg/combine.py prompts --captions <captions> --kinematic <kinematic> --version v6 --out <c>/prompts
+python kinseg/combine.py ask --prompts <c>/prompts --provider openlux-codex-gpt-1 --autolabel <checkout> \
+    --out <c>/answers/sol_run1
+python kinseg/combine.py segments --prompts <c>/prompts --answers <c>/answers/sol_run1 \
+    --kinematic <kinematic> --out <c>/segments_sol_run1
+# review videos and page next to FLORA's run (on the machine with the videos; ffmpeg with libass)
+python kinseg/nero_review.py --jobs jobs3.jsonl --kinematic <kinematic> --captions <captions> \
+    --segments <c>/segments_sol_run1 --flora <FLORA run> --method C1 --out <review>
 ```
+
+The first three demos of each task (21, 16.5 min) took 342 Captioner calls,
+61 min on one GPU pair; results and observations are in SYSTEM.md §5.11.
 
 The 70 episodes of the FLORA pilot (7 tasks, 53 min), per episode (median):
 
