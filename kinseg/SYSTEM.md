@@ -1286,6 +1286,56 @@ the grasp's phase. In practice sol confirms almost every event (Galaxea 102 of
 102; DROID 142 of 156), so the verdicts matter only where they reject one: on
 held-out DROID that makes C3 the best DROID result (0.605 against 0.579).
 
+### 5.8 Transitions marked by the model, attached by setting (v7, 2026-11-06)
+
+To keep the pipeline independent of TempSeg and of one dataset's
+convention, v7 (`prompts/combine/v7.txt`) is v6 plus one request: list every
+phase that is only a transition between actions, with its type (reach, lift,
+carry, retreat). The model still puts those phases in subtasks as in v6. C7
+then moves a transition phase that sits at the edge of a subtask to the
+neighbouring subtask, on the side a dataset setting gives for its type
+(`score --attach lift=next,retreat=next`); C8 adds the grasp anchors of C5.
+No TempSeg output is used. Sol, 26 tuning episodes, two runs:
+
+| F1@0.75 (F1@0.5) | Galaxea run 1 / 2 | DROID run 1 / 2 |
+|---|---:|---:|
+| TempSeg | 0.676 (0.835) | 0.530 (0.747) |
+| TempSeg + gripper split | 0.681 (0.851) | 0.587 (0.804) |
+| v6 C1 (for comparison) | 0.511 / 0.526 | 0.578 / 0.622 |
+| v6 C5, grasp anchors | 0.571 / 0.571 | 0.578 / 0.622 |
+| v7 C1, model's subtasks | 0.511 / 0.456 (0.902 / 0.868) | 0.562 / 0.562 (0.787 / 0.764) |
+| v7 C7, lift=next, retreat=next | **0.571 / 0.529** (0.902 / 0.868) | **0.607 / 0.607** (0.787 / 0.742) |
+| v7 C7, lift=previous, retreat=next | 0.511 / 0.485 | 0.562 / 0.539 |
+| v7 C7, lift=next, retreat=previous | 0.511 / 0.500 | 0.562 / 0.562 |
+| v7 C7, lift=previous, retreat=previous | 0.406 / 0.412 | 0.517 / 0.517 |
+| v7 C8, lift=next, retreat=next + grasp anchors | 0.556 / 0.515 | 0.584 / 0.584 |
+
+- **One setting helps both families: lift and retreat go to the next
+  action** (+0.06 / +0.07 on Galaxea, +0.045 on DROID over v7's own subtasks).
+  It is what v6's movement line asks for; the model labels the lift as a
+  transition but keeps it in the pick-up, and C7 enforces the rule in code.
+  Every other setting loses, most when retreats go back to the previous action
+  (Galaxea 0.41).
+- **The setting predicted from the references was wrong for DROID.** DROID's
+  reference pick-ups end 1.7 s after the close command (§5.7), which
+  suggested lift=previous; it scored 0.562 / 0.539 against 0.607 / 0.607 for
+  lift=next. DROID's command-based gripper times are a poor guide; a setting
+  should be chosen by scoring a few annotated episodes, not by that
+  measurement alone.
+- **The gain is convention.** With transitions forgiven (regions capped at
+  1 s), C7 equals C1 on Galaxea (0.677 / 0.632 against 0.677 / 0.662) and is
+  close on DROID (0.629 / 0.629 against 0.607 / 0.584).
+- **Without TempSeg, Galaxea stays about 0.1 below it** (best 0.571 against
+  0.676) while DROID is above it (0.607 against 0.530, and above the gripper
+  split's 0.587). What is left on Galaxea is where our phase cuts lie (median
+  0.46 s from the reference against TempSeg's 0.27 s), not which side a phase
+  goes to.
+- Asking for transitions costs v7's own grouping a little (C1 Galaxea 0.456
+  in run 2), within the run-to-run noise of about 0.05.
+
+Files: `outputs/kinseg/combine/T4_v7/` (answers, `score_<setting>.md`,
+`transition_<setting>.md`).
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |

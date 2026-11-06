@@ -55,6 +55,8 @@ class Judge:
 
     def __init__(self, autolabel: str, provider: str, cache: Path, model: Optional[str] = None, workers: int = 4):
         sys.path.insert(0, autolabel)
+        # Our providers (the protocol's Gemini judge) merged into autolabel's provider file.
+        os.environ.setdefault("AUTOLABEL_VL_PROVIDERS", str(JUDGE.parent / "providers.json"))
         from autolabel.describe.vl_client import VLClient, get_provider_api_key
 
         self.make = lambda: VLClient(model=model, provider=provider, api_key=self.key, max_tokens=2048, timeout=180)
@@ -208,7 +210,7 @@ def main(argv=None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--autolabel", default=os.environ.get("AUTOLABEL_ROOT"), required=False)
         p.add_argument("--kinematic", required=True)
-        p.add_argument("--provider", default="openlux-codex-gpt-1")
+        p.add_argument("--provider", default="openlux-anti-gemini-1", help="judge provider (default: the protocol's gemini-3.5-flash)")
         p.add_argument("--model")
         p.add_argument("--cache", required=True, help="JSONL of judged pairs (appended)")
         p.add_argument("--workers", type=int, default=4)

@@ -1,0 +1,14 @@
+{
+  "providers": {
+    "openlux-anti-gemini-1": {
+      "base_url": "https://api.openlux.ai/v1",
+      "wire_api": "chat",
+      "key_env": "OPENLUX_ANTI_GEMINI_1_API_KEY",
+      "key_pass": "label/openlux/anti-gemini-1",
+      "default_model": "gemini-3.5-flash",
+      "request": {"temperature": 0.0, "max_tokens": 2048, "reasoning_effort": null},
+      "status": "testing",
+      "notes": ["2026-11-06: added for the WGO-Bench label judge (the protocol's judge is gemini-3.5-flash); the key also lists gemini-3.x flash variants."]
+    }
+  }
+}
