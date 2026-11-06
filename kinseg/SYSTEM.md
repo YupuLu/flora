@@ -75,6 +75,10 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
                  dataset setting in code (C7), no TempSeg (§5.8; 26 episodes, 11-06)
                  lift=next, retreat=next: Galaxea 0.571 / 0.529, DROID 0.607 / 0.607
                  (TempSeg 0.676 / 0.530; gripper split 0.681 / 0.587)
+             v6-free, v6-lift: the switch as a reworded movement line (§5.8); v6 kept
+             channels: codex-gpt-1 best; codex-gpt-2, azure-gpt-2 (sol, luna) behind (§5.8)
+             cut candidates: perfect grouping on our nearest phase boundary 0.854 / 0.940,
+                 a fixed side 0.58-0.67 on Galaxea (§5.9)
 ```
 
 | Name | What it is | Defined in | Output folder (`outputs/kinseg/`) |
@@ -1404,43 +1408,89 @@ group-name line (v6-free) is.
 |---|---:|---:|---:|---:|---:|
 | openlux-codex-gpt-1 (gpt-6.1-sol, reasoning medium; used so far) | 0.511, 0.526 / 0.571, 0.571 | 0.578, 0.622 / 0.578, 0.622 | 24 of 26 | 26 of 26 | 6.6 |
 | openlux-codex-gpt-2 (gpt-6.1-sol, no reasoning setting) | 0.511, 0.466 / 0.571, 0.526 | 0.578, 0.609 / 0.600, 0.587 | 19 | 18 | 8.6 |
+| openlux-azure-gpt-2 (gpt-6.1-sol:stable, reasoning medium) | 0.449, 0.459 / 0.464, 0.489 | 0.600, 0.584 / 0.578, 0.584 | 18 | 20 | 11.2 |
 | openlux-azure-gpt-2 (gpt-6-luna:stable, reasoning medium) | 0.306, 0.276 / 0.347, 0.303 | 0.452, 0.381 / 0.476, 0.405 | 14 | 13 | 11.6 |
 
 codex-gpt-1 is the best and by far the most repeatable channel for v6; the
 same model without a reasoning setting (codex-gpt-2) is close but less
-stable, and luna stays far behind, as with v1 and v2.
+stable, and luna stays far behind, as with v1 and v2. Sol is also reachable
+on azure-gpt-2, but only with openlux's routing suffix (`--model
+gpt-6.1-sol:stable`; the plain name returns 404 model_not_found): DROID is at
+codex-gpt-1's level, Galaxea lower (0.449 / 0.459), and the runs agree in 18
+of 26 episodes. In these v6 runs the codex route adds a constant 18,200
+input tokens of its own to every request (median 23,100 against 4,900 on
+azure-gpt-2; in the first runs of 2026-11-05 the difference was about 1,100),
+which may be part of the difference; openlux's price ratio for the
+azure-gpt-2 group is 0.1 against 0.037 for codex-gpt-1.
 
-**Where the reference cuts lie in our phases.** For every internal
-reference cut of all 75 episodes, the phase boundaries just before and after
-it, and what placing every cut on one of them costs when the grouping is
-perfect (`kinseg/cut_ceiling.py`):
+
+### 5.9 Where the reference cuts lie in our phases (2026-11-06)
+
+A method that combines our phases can only cut on our phase boundaries. For
+every internal reference cut of all 75 episodes, `kinseg/cut_ceiling.py` finds
+the phase boundary just before and just after it, and scores perfect
+grouping with every cut moved onto one of them:
 
 | | Galaxea (98 cuts) | DROID (100 cuts) |
 |---|---:|---:|
 | phase around a reference cut, median length | 0.93 s | 1.75 s |
 | distance to the nearest phase boundary, median | 0.29 s | 0.33 s |
 | … within 0.25 s / within 0.5 s / over 1 s | 40 / 80 / 0 | 37 / 69 / 6 |
-| perfect grouping, every cut on the nearest boundary: F1@0.75 (F1@0.5) | 0.854 (0.984) | 0.940 (1.000) |
-| perfect grouping, every cut on the boundary before it | 0.667 (0.967) | 0.847 (0.947) |
-| perfect grouping, every cut on the boundary after it | 0.577 (0.919) | 0.800 (0.960) |
+| perfect grouping, every cut on the **nearest** boundary: F1@0.75 (F1@0.5) | **0.854** (0.984) | **0.940** (1.000) |
+| perfect grouping, every cut on the boundary **before** it | 0.667 (0.967) | 0.847 (0.947) |
+| perfect grouping, every cut on the boundary **after** it | 0.577 (0.919) | 0.800 (0.960) |
 
-The reference cut usually lies inside a phase, and which boundary is nearer
-changes from cut to cut. Our candidates allow 0.854 on Galaxea if the nearer
-boundary is chosen every time, but any fixed side, as a convention gives,
-caps Galaxea at 0.58-0.67 even with perfect grouping; v6 is at 0.51-0.57.
-Short subtasks fail whichever boundary is chosen. Galaxea 009, "place the
-blue cloth into the left basket" (24.59-26.43 s) | "pick up yellow lemon from
-the table" (26.43-29.09 s): the cut lies in phase 27, 25.70-27.37 s ("move
-the left hand back"), 0.73 s after its start and 0.93 s before its end. At
-25.70 the first subtask's tIoU is 0.60; at 27.37 they are 0.66 and 0.65; both
-miss 0.75. In Galaxea 011, "pick up the blue cup" | "drop the blue cup into
-the left brown basket" at 11.64 s, inside 11.17-12.07 s, the boundary before
-gives 0.80 / 0.77 (both match) and the one after 0.85 / 0.73 (the drop
-misses). In DROID 000013 the cut at 8.12 s lies 0.22 s after the start of a
-2.2 s phase: the boundary before gives 0.97 / 0.97, the one after 0.80 /
-0.74. The log tells the model nothing about where inside a phase an
-annotator would cut, so finer candidates (gripper events' ends, speed minima
-inside long phases) are what would narrow the distance.
+- A reference cut usually lies inside a phase, about a third of a phase from
+  the nearest boundary, and which boundary is nearer changes from cut to cut.
+- Choosing the nearer boundary every time would allow 0.854 on Galaxea; any
+  fixed side, which is what a convention gives, caps Galaxea at 0.58-0.67
+  even with perfect grouping. v6 is at 0.51-0.57.
+- Short subtasks can fail whichever boundary is chosen; long ones survive
+  either. The log tells the model nothing about where inside a phase an
+  annotator would cut, so finer candidates (gripper events' ends, speed minima
+  inside long phases) are what would narrow the distance.
+
+Three cuts, drawn to scale (`cut_ceiling.py --examples EPISODE:CUT`): the two
+reference subtasks A and B around the cut, our phase boundaries (`|`), the
+phase that contains the cut (`<-^->`, `^` the reference cut), and the two
+subtasks when the cut is placed on that phase's boundary before or after.
+
+```text
+galaxea_009, reference cut 9 at 26.43 s (0.06 s per character, 24.59-29.09 s)
+
+reference      [============= A =============|=================== B ===================]
+phases                  |        |                         |             |         |    
+phase at cut                     <-----------^------------->                               25.70-27.37 s; cut 0.73 s after its start
+cut on before  [======= A =======|========================= B =========================]   tIoU A 0.60, B 0.78
+cut on after   [==================== A ====================|============ B ============]   tIoU A 0.66, B 0.65
+
+A = place the blue cloth into the left basket (24.59-26.43 s); B = pick up yellow lemon from the table (26.43-29.09 s); a match needs tIoU 0.75
+
+galaxea_011, reference cut 4 at 11.64 s (0.06 s per character, 9.25-13.24 s)
+
+reference      [=================== A ====================|============ B =============]
+phases             |            |                 |               |             |       
+phase at cut                                      <-------^------->                        11.17-12.07 s; cut 0.48 s after its start
+cut on before  [=============== A ================|================ B =================]   tIoU A 0.80, B 0.77
+cut on after   [======================= A ========================|======== B =========]   tIoU A 0.85, B 0.73
+
+A = pick up the blue cup from the green tray (9.25-11.64 s); B = drop the blue cup into the left brown basket (11.64-13.24 s); a match needs tIoU 0.75
+
+robointer_droid_000013, reference cut 0 at 8.12 s (0.22 s per character, 0.00-15.81 s)
+
+reference      [================ A =================|=============== B ================]
+phases         |       |   |  |     |  |    | |    |         |   |           |    |  |  
+phase at cut                                       <^-------->                             7.90-10.10 s; cut 0.22 s after its start
+cut on before  [================ A ================|================ B ================]   tIoU A 0.97, B 0.97
+cut on after   [===================== A =====================|=========== B ===========]   tIoU A 0.80, B 0.74
+
+A = pick up the silver cup from the countertop behind the sink (0.00-8.12 s); B = place the silver cup on the right side of the countertop next to the green dispenser (8.12-15.81 s); a match needs tIoU 0.75
+```
+
+Galaxea 009 fails on both sides (the place is 1.8 s long and the cut sits
+0.73 s and 0.93 s from the two boundaries); Galaxea 011 matches only with the
+boundary before; DROID 000013's 2.2 s phase leaves the boundary after 1.98 s
+away.
 
 ## 6. Results (all 75 episodes unless noted)
 
