@@ -14,7 +14,8 @@ decisions ahead (section 8). Measurements and commands are in
 Every method so far, in the order it was built, with what it fed into. Each
 node gives its name as used in the code and outputs, the episodes it was
 measured on, and its F1@0.75 (Galaxea / DROID). TempSeg alone is 0.687 /
-0.562 on all 75 episodes.
+0.562 on all 75 episodes. Every name is defined in full in *Design
+definitions* below (D1-D9).
 
 ```text
 kinematic phases + gripper events (autolabel)          video ──► Flora-TempSeg (#0, 0.687 / 0.562)
@@ -84,6 +85,206 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
 | gripper verdicts, confirmed events | the model's grasp / release / none per gripper event; a grasp or release judged so | §5.7 | |
 | heldout_v6, all75_v6 | v6 on the 49 held-out episodes, and all 75 pooled | §5.7 | `combine/heldout_v6`, `combine/all75_v6` |
 | transition region, forgiven | free movement next to a reference cut; scoring that accepts a cut anywhere in it | §5.7, `transition_eval.py` | `combine/all75_v6/transition_eval_*.md` |
+
+## Design definitions
+
+Each design of the map, defined on its own: what it takes, what it does,
+why, and where it is implemented. Later sections give the results; these
+definitions are enough to read them.
+
+### D1. Inputs
+
+- **Phases, our cuts.** autolabel's kinematic segmentation splits an episode
+  into activity phases wherever the robot's motion changes (an arm starts,
+  stops or turns; base or torso motion). The phases tile the episode; their
+  internal boundaries are *our cuts*. A WGO phase lasts about 1 s; a
+  reference subtask 3-8 s.
+- **Gripper events.** Each close and open of a gripper found by autolabel,
+  with its hand and time: from the measured finger opening (Galaxea) or from
+  the gripper command (DROID, which is earlier than the actual motion).
+- **TempSeg segments, TempSeg cuts.** Flora-TempSeg's output for the episode,
+  run unchanged; *TempSeg cuts* are all start and end times of its segments.
+- **References.** WGO-Bench's annotated subtasks (start, end, instruction).
+
+### D2. Scores
+
+- **F1@0.75 (WGO protocol).** In a copy of the prediction, the first start
+  and last end are moved to the first and last reference edges ("outer edges
+  snapped"). A predicted segment and a reference subtask can match when their
+  temporal IoU (overlap divided by union) is at least 0.75; a maximum
+  one-to-one matching gives the true positives; counts are pooled over the
+  episodes of a family before precision, recall and F1. **F1@0.5** is the same
+  with IoU at least 0.5, so it checks grouping more than boundary precision.
+- **Same operation inside / across a cut.** For captions only: the share of
+  neighbouring phase pairs with the same operation (D4) when both lie in one
+  reference subtask (higher is better), and when a reference cut lies within
+  0.5 s of their boundary (lower is better).
+- **Transitions forgiven.** See D9.
+
+### D3. Direction 1: combining TempSeg's output with our phases (`merge.py`)
+
+- **#2 group.** Each phase is assigned to the TempSeg segment it overlaps
+  most; consecutive phases with the same segment are joined. Result: TempSeg's
+  grouping on our boundaries.
+- **#3 snap.** Each TempSeg endpoint is moved to our nearest cut when one lies
+  within 0.5 s (or 1 s). Result: TempSeg's segments with our boundary times.
+- **#4 gripper split.** Inside each TempSeg segment, look for a close of one
+  hand followed later by an open of the same hand (a grasp and a release: a
+  pick and a place merged into one segment). If found, cut the segment at our
+  first cut after the close ends, and repeat on the rest of the segment.
+- **#5 constrained decoding.** TempSeg's decoder may only write times that are
+  our cuts (`segment.py --kinematic`).
+- **#6 grid beliefs.** TempSeg's probabilities for every time on its 0.5 s
+  grid are read during normal decoding; our cuts with high probability are
+  kept (`beliefs.py`).
+
+### D4. Captions per phase and their joins (`caption_merge.py`)
+
+- **Caption per phase.** Flora-Captioner gets each phase as TARGET, with the
+  previous and next phases as BEFORE and AFTER video blocks, and writes one
+  instruction. Runs: **A** (FLORA's default inputs), **plain** (plus the bare
+  task sentence in FLORA's episode-instruction field).
+- **Operation.** The leading verb phrase of a caption ("pick up", "place",
+  "move"). A caption that only moves a hand ("move the left hand back") has
+  no operation of its own and takes the next caption's.
+- **Exact join.** Consecutive phases with identical captions (after removing
+  case, punctuation and articles) become one segment.
+- **Operation join.** Consecutive phases with the same operation become one
+  segment.
+- **Motion absorbed.** As the operation join, but every caption led by a
+  motion verb (move, lift, hold, lower, bring …), of a hand or of a held
+  object, takes the next operation; after autolabel's VL post-process, where
+  low-importance intervals (reach, transport, retract) join their neighbour.
+- **TempSeg split by operation.** TempSeg's segments, cut at our cuts where
+  the operation of the phases inside changes.
+
+### D5. Captioner input variants, text in FLORA's field (`background.py`; #11)
+
+FLORA's prompt is unchanged; text goes into its episode-instruction JSON line.
+- **Background:** the remote workspace's template; *task brief* = "Task
+  brief: <task sentence>" with a guidance paragraph (intent, not proof).
+- **Context:** which video blocks are sent: all three, or TARGET only, or
+  TARGET and AFTER.
+- **Previous:** the caption just written for the previous phase.
+- **Robot state:** the phase's gripper state and events and moving arms from
+  the kinematics, as a sentence.
+
+Names: **A_none** (nothing, TARGET only), **B_both** (task brief, all blocks),
+**B_none** (task brief, TARGET only), **B_prev** (task brief + previous,
+TARGET + AFTER), **B_robot** (task brief + robot state, all blocks),
+**B_robot_prev** (task brief + robot state + previous, TARGET + AFTER).
+
+### D6. Our Captioner prompt template (`caption_prompt.py`; #12)
+
+FLORA's prompt rebuilt in our code: the video blocks, then an *Episode
+information* block, then FLORA's instruction (its context sentence adapted to
+the blocks sent). Items: **brief** (task sentence), **objects** (nouns of the
+task sentence), **kinematics** (per hand: moving or still, gripper state and
+changes), **previous** (previous phase's caption), **notes** (one line per item
+on how to use it). Runs add one item each: **T1** brief, **T2** + notes, **T3**
++ objects, **T4** + previous (kept), **T5** + kinematics; all with the three
+video blocks.
+
+### D7. Combination by a language model (`combine.py`; #13-#15)
+
+- **Status log.** One text prompt per episode: the task sentence, the robot
+  (one or two arms), and one line per phase: index, time, measured motion and
+  gripper changes, and the T4 caption. No video. Then an instruction (below).
+- **Answer.** JSON with `subtasks` (each a first and last phase index and an
+  instruction) and, for instructions that ask for it, `gripper` verdicts.
+  The answer is checked: subtasks sorted; an overlap is cut at the later
+  subtask's first phase; a gap and uncovered phases at either end are joined
+  to the neighbouring subtask. No answer so far needed a repair.
+- **Gripper verdict.** For each gripper event of the log, the model says
+  whether it grasped an object, released one, or did neither
+  (`{"phase": 3, "hand": "right", "event": "close", "is": "grasp"}`). A
+  *confirmed event* is a close judged "grasp" or an open judged "release".
+- **Instructions** (files `prompts/combine/<version>.txt`), each the rules
+  after the log:
+  - **v1:** reaching belongs to the action it leads to, carrying to the
+    put-down, moving away after a release to the next step; different words
+    for one movement do not start a new step; gripper verdicts.
+  - **v2:** no conventions; captions may be wrong or discontinuous, read with
+    neighbours; kinematics support the captions; subtasks only.
+  - **v3:** v2 + FLORA-TempSeg's sentence "acquisition and delivery are
+    distinct …".
+  - **v5:** v2 + "keep basic manipulation actions (pick up, place, pour …)
+    separate".
+  - **v6 (kept):** keep basic actions separate but group very short phases
+    and similar verbs into their action; arm movement that only brings the
+    hand or a held object to the next action belongs to it (after the last
+    action, to the last); captions may be wrong; kinematics support the
+    captions; gripper verdicts.
+  - **v6 ablations:** v6-movement (without the movement rule), v6-grouping
+    (without the grouping clause), v6-previous (moving away belongs to the
+    action it follows), v6-noverdict (no verdicts), v6-boundary (verdict
+    "does a subtask end or begin here" instead).
+- **Models:** sol (GPT-6.1-sol, kept), luna (GPT-6-luna), haiku (Claude
+  Haiku, run as a subagent).
+
+### D8. Post-processing of a combination answer, C1-C6 (`combine.py score`)
+
+All six start from the same answer; they differ only in how the cuts are
+placed. TempSeg cuts and the 1 s tolerance are as in D1.
+
+- **C1, the model's subtasks.** Each subtask runs from the start of its first
+  phase to the end of its last phase. Its cuts therefore lie on our cuts.
+- **C2, C1 split at confirmed grasp → release.** Rule #4 (D3) applied to C1's
+  segments with confirmed events only: a C1 segment that contains a confirmed
+  grasp and, later, a confirmed release of the same hand is cut at our first
+  cut after the grasp. It catches a pick and a place that the model merged.
+- **C3, TempSeg split at confirmed grasp → release.** The same rule applied to
+  TempSeg's segments instead of C1: #4 with the events the model judged "none"
+  left out. The model's grouping is not used, only its verdicts.
+- **C4, C1 snapped to TempSeg cuts.** Every endpoint of every C1 segment is
+  moved to the nearest TempSeg cut if one lies within 1 s, else kept. The
+  model's grouping, with TempSeg's boundary times (C1 can only cut on our
+  phase boundaries, which can be far from where an annotator cuts).
+- **C5, C1 anchored at confirmed grasps.** For each confirmed grasp, find the
+  phase it happens in; if a C1 cut lies at most one phase away from the end of
+  that phase, move the nearest such cut to exactly the end of that phase. It
+  encodes "a grasp completes the pick-up", the convention of WGO's Galaxea
+  references (the model tends to end the pick-up one phase later). Releases
+  are not used as anchors (it made results worse).
+- **C6, C5 snapped.** C5, then the snapping of C4.
+
+Worked example (one arm; reference: pick up 0-2.4 s, place 2.4-5.2 s;
+TempSeg: 0-2.5, 2.5-6.0):
+
+```text
+phase  time     log status        caption
+0      0.0-1.0  moves             move the hand toward the cup
+1      1.0-2.0  moves, closes     grasp the cup              ← verdict: close = grasp (confirmed)
+2      2.0-3.0  moves             lift the cup
+3      3.0-4.0  moves             carry the cup to the tray
+4      4.0-5.0  moves, opens      place the cup on the tray  ← verdict: open = release (confirmed)
+5      5.0-6.0  moves             move the hand away
+
+model answer: subtasks [0, 2] "Pick up the cup", [3, 5] "Place the cup on the tray"
+C1  0.0-3.0 | 3.0-6.0     cut on our cut 3.0 (the end of phase 2)
+C2  = C1                  no segment holds both the grasp and the release
+    (had the answer been one subtask [0, 5]: cut at our first cut after the grasp → 0.0-2.0 | 2.0-6.0)
+C3  TempSeg 0.0-2.5 | 2.5-6.0, split only where one TempSeg segment holds a confirmed grasp and release
+C4  0.0-2.5 | 2.5-6.0     3.0 → TempSeg cut 2.5 (0.5 s away)
+C5  0.0-2.0 | 2.0-6.0     the grasp is in phase 1; the cut 3.0 is one phase from its end 2.0 → moved to 2.0
+C6  0.0-2.5 | 2.5-6.0     C5's 2.0 → TempSeg cut 2.5
+```
+
+### D9. Evaluation splits and the convention-free view
+
+- **Tuning subset (26 episodes):** every second Galaxea episode (13) and every
+  fourth DROID episode (13); all prompt and post-processing choices were made
+  on it. **Held-out (49):** the other episodes, used once with everything
+  frozen (`heldout_v6`). **All 75:** both pooled (`all75_v6`).
+- **Transition region** (`transition_eval.py`). Around each internal
+  reference cut: the phases touching the cut, cut back at the nearest gripper
+  event (a region never contains a grasp or release). This is free movement
+  (moving away, reaching, lifting) that an annotator could give to either
+  neighbouring subtask.
+- **Transitions forgiven.** Before WGO scoring, a predicted endpoint inside a
+  transition region is moved onto that region's reference cut. A method then
+  scores as if it had followed the reference's convention for free
+  movements; the difference to the plain score is what the convention costs.
 
 ## 1. Goal
 
