@@ -1389,6 +1389,15 @@ no TempSeg:
   without TempSeg's cuts (best 0.571 against 0.676); the cut candidates are
   the limit.
 
+**v6-lift** (`prompts/combine/v6-lift.txt`): v6 with one word added to the
+movement line, "(reaching, lifting, carrying, moving away)". Sol, 26 episodes,
+two runs: Galaxea 0.481 / 0.511 (grasp anchors 0.496 / 0.541), DROID 0.556 /
+0.607. The pick-up ends do not move (median offset after a grasp +0.23 /
++0.32 s, v6 +0.26 s; 7 of 31 within 0.25 s), and the answers change as much
+as with the other rewordings (identical to v6's subtasks in 13-17 of 26
+episodes; v6-lift's own runs agree in 18). The word is not followed; the
+group-name line (v6-free) is.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
