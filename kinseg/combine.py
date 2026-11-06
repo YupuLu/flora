@@ -30,6 +30,7 @@ Any other model can answer instead: an answer folder holds ``<episode>.json`` wi
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -42,102 +43,28 @@ from typing import Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SNAP_S = 1.0
-SYSTEM = "You combine short phases of a robot demonstration into subtasks. Answer in JSON only."
-STEP = ("Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its "
-        "own (pick up an object, place it, pour, open or close something, push, wipe ...).")
-INSTRUCTIONS = {
-    # v1 (2026-11-05): conventions read off WGO-Bench's references, and gripper verdicts.
-    "v1": STEP + """
-- Reaching for an object belongs to the step that acts on it; carrying a held object belongs to the step that puts it down; moving away after a release belongs to the next step.
-- Different words for one movement ("lift", "move", "put") do not start a new step by themselves.
-- For each gripper close or open in the log, decide from the instructions whether it grasped an object, released one, or did neither.
-
-Answer in JSON only:
-{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "is": "grasp", "release" or "none"}, ...],
- "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once.""",
-    # v2: no task-specific conventions; captions can be wrong or discontinuous; kinematics support the
-    # captions; subtasks only.
-    "v2": STEP + """
-- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
-- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
-
-Answer in JSON only:
-{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-The subtasks cover every phase from 0 to the last, in order, each phase once.""",
-    # v5: v2 with a rule to keep the basic manipulation actions separate.
-    "v5": STEP + """
-- Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate subtasks.
-- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
-- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
-
-Answer in JSON only:
-{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-The subtasks cover every phase from 0 to the last, in order, each phase once.""",
-    # v3: v2 with FLORA-TempSeg's own granularity policy (its prompt) in place of our conventions.
-    "v3": STEP + """
-- Acquisition and delivery are distinct when observable. Ordinary contacts, adjustments and low-motion pauses within the same ongoing goal do not create new subtasks.
-- Some captions may be wrong, and the captions are sometimes discontinuous; read each phase together with its neighbours.
-- Use the kinematic signals (hand motion, gripper closes and opens) to support what the captions describe.
-
-Answer in JSON only:
-{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-The subtasks cover every phase from 0 to the last, in order, each phase once.""",
-}
-# v6: v1 and v5 merged in general terms; "v6-movement" and "v6-grouping" leave out one rule each.
-V6_RULES = {
-    "basic": "Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate "
-             "subtasks, but group very short phases and phases with similar verbs into the action they belong to.",
-    "basic-only": "Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate "
-                  "subtasks.",
-    "movement": "Arm movement that only brings the hand or a held object to the next action (reaching, carrying, "
-                "moving away) belongs to that action; after the last action, it belongs to the last action.",
-    "movement-previous": "Arm movement that only brings the hand or a held object to the next action (reaching, "
-                         "carrying) belongs to that action; moving away after an action belongs to the action it "
-                         "follows.",
-    "captions": "Some captions may be wrong or discontinuous; read each phase together with its neighbours.",
-    "kinematics-only": "Use the kinematic signals to support the captions.",
-    "kinematics-boundary": "Use the kinematic signals to support the captions. For each gripper close and open, "
-                           "decide whether a subtask ends there, begins there, or neither.",
-    "kinematics": "Use the kinematic signals to support the captions. For each gripper close and open, decide "
-                  "whether it grasped an object, released one, or did neither.",
-}
-V6_ANSWER = """Answer in JSON only:
-{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "is": "grasp", "release" or "none"}, ...],
- "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
+PROMPTS = Path(__file__).resolve().parent / "prompts" / "combine"
 
 
-V6_ANSWER_SUBTASKS = """Answer in JSON only:
-{"subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-The subtasks cover every phase from 0 to the last, in order, each phase once."""
-V6_ANSWER_BOUNDARY = """Answer in JSON only:
-{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "boundary": "ends", "begins" or "neither"}, ...],
- "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
-List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once."""
+def load_instructions(folder: Path = PROMPTS) -> Dict[str, str]:
+    """Instruction versions: every ``<version>.txt`` in ``folder`` except ``system.txt``.
+
+    Each file is the text after the status log, verbatim; a new version is a new file. The versions so
+    far (2026-11-05): v1 our conventions + gripper verdicts; v2 no conventions, subtasks only; v3 v2 +
+    FLORA-TempSeg's granularity sentence; v5 v2 + basic actions kept separate; v6 v1 and v5 in general
+    terms; v6-movement, v6-grouping, v6-previous, v6-noverdict, v6-boundary: v6 with one change each.
+    """
+    return {f.stem: f.read_text().rstrip("\n") for f in sorted(folder.glob("*.txt")) if f.stem != "system"}
 
 
-def _v6(*rules: str, answer: str = V6_ANSWER) -> str:
-    return ("Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own.\n"
-            + "\n".join(f"- {V6_RULES[r]}" for r in rules) + "\n\n" + answer)
-
-
-INSTRUCTIONS.update({
-    "v6": _v6("basic", "movement", "captions", "kinematics"),
-    "v6-movement": _v6("basic", "captions", "kinematics"),
-    "v6-grouping": _v6("basic-only", "movement", "captions", "kinematics"),
-    # the opposite attachment of moving away (to the action it follows)
-    "v6-previous": _v6("basic", "movement-previous", "captions", "kinematics"),
-    # no gripper verdicts asked; or a boundary question instead of grasp/release
-    "v6-noverdict": _v6("basic", "movement", "captions", "kinematics-only", answer=V6_ANSWER_SUBTASKS),
-    "v6-boundary": _v6("basic", "movement", "captions", "kinematics-boundary", answer=V6_ANSWER_BOUNDARY),
-})
+SYSTEM = (PROMPTS / "system.txt").read_text().strip()
+INSTRUCTIONS = load_instructions()
 INSTRUCTION = INSTRUCTIONS["v1"]
 
 
-def asks_gripper(version: str) -> bool:
-    """Whether instruction ``version`` asks for gripper verdicts."""
-    return '"gripper"' in INSTRUCTIONS[version]
+def asks_gripper(item: Dict[str, object]) -> bool:
+    """Whether a prompt item's instruction asks for gripper verdicts."""
+    return '"gripper"' in str(item.get("instruction") or INSTRUCTIONS[str(item.get("version", "v1"))])
 
 
 def hands(case: Dict[str, object]) -> Tuple[str, ...]:
@@ -163,8 +90,9 @@ def status(case: Dict[str, object], k: int, robot_hands: Sequence[str]) -> str:
     return ", ".join([motion] + changes)
 
 
-def episode_log(case: Dict[str, object], phases: List[Dict[str, object]], version: str = "v1") -> str:
-    """The user prompt for one episode: task, robot, phase log and instruction ``version``."""
+def episode_log(case: Dict[str, object], phases: List[Dict[str, object]], version: str = "v1",
+                instruction: Optional[str] = None) -> str:
+    """The user prompt for one episode: task, robot, phase log and ``instruction`` (default: ``version``'s)."""
     robot_hands = hands(case)
     lines = [f"Task: {str(case.get('instruction', '')).strip()}",
              "Robot: " + ("one arm (right hand)." if len(robot_hands) == 1 else "two arms (left and right hands)."),
@@ -175,7 +103,7 @@ def episode_log(case: Dict[str, object], phases: List[Dict[str, object]], versio
         caption = (p.get("caption") or "").strip() if p.get("status", "complete") == "complete" else ""
         lines.append(f"{k:<3d} {p['start_s']:.1f}-{p['end_s']:.1f}  {status(case, k, robot_hands):<24} | "
                      f"{caption or '(no caption)'}")
-    return "\n".join(lines + ["", INSTRUCTIONS[version]])
+    return "\n".join(lines + ["", instruction if instruction is not None else INSTRUCTIONS[version]])
 
 
 def parse_answer(text: Optional[str]) -> Optional[dict]:
@@ -323,14 +251,21 @@ def prompts(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     episodes = sorted(p.stem for p in Path(args.captions).glob("*.json") if p.stem in kin)
+    if args.instruction:
+        version, instruction = Path(args.instruction).stem, Path(args.instruction).read_text().rstrip("\n")
+    else:
+        version, instruction = args.version, INSTRUCTIONS[args.version]
     for episode in episodes:
         rec = json.loads((Path(args.captions) / f"{episode}.json").read_text())
         phases = [dict(start_s=p["start_s"], end_s=p["end_s"], caption=p.get("caption", ""), status=p.get("status"))
                   for p in rec["rounds"][0]]
-        prompt = episode_log(kin[episode], phases, args.version)
+        prompt = episode_log(kin[episode], phases, version, instruction)
         (out / f"{episode}.json").write_text(json.dumps(dict(id=episode, family=kin[episode]["family"],
                                                              captions=str(args.captions), system=SYSTEM,
-                                                             version=args.version, prompt=prompt, phases=phases),
+                                                             version=version, instruction=instruction,
+                                                             instruction_sha256=hashlib.sha256(
+                                                                 instruction.encode()).hexdigest(),
+                                                             prompt=prompt, phases=phases),
                                                         indent=1) + "\n")
         (out / f"{episode}.txt").write_text(f"SYSTEM: {SYSTEM}\n\n{prompt}\n")
     print(f"wrote {len(episodes)} prompts to {out}")
@@ -418,7 +353,7 @@ def score(args) -> int:
             c3 = split_at_grasps(tempseg, confirmed, cuts)
             c4 = snap(c1, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
             row.setdefault("C1 model's subtasks", []).append(case_of(c1, refs))
-            if asks_gripper(item.get("version", "v1")):
+            if asks_gripper(item):
                 row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
                 row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
                 c5 = anchored(ranges, phases, confirmed) if ranges else c1
@@ -549,6 +484,7 @@ def examples(args) -> int:
                          f"{scores.get(f'{n} · subtasks (C1)', '–')} / {scores.get(f'{n} · snapped to TempSeg cuts (C4)', '–')}"
                          for n in names) + " |")
     names = list(answers)
+    first = next(iter(items.values()))
     header = ["# How the combination works: examples", "",
               "Each episode shows the status log the model reads (time, robot, caption; one line per phase), "
               "the reference subtasks (not shown to the model), and each model's answer: **S*n*** starts a "
@@ -557,7 +493,7 @@ def examples(args) -> int:
               f"moved to TempSeg's nearest cut within {SNAP_S:g} s (C4); ✓ marks a segment matched to a "
               "reference (F1@0.75, WGO protocol).", "",
               "The instruction after the log, the same for every episode:", "", "```text",
-              INSTRUCTIONS[next(iter(items.values())).get("version", "v1")], "```", "",
+              str(first.get("instruction") or INSTRUCTIONS[first.get("version", "v1")]), "```", "",
               "| Episode | Family | Phases | Subtasks | TempSeg | " + " | ".join(f"{n} C1 / C4" for n in names) + " |",
               "|---|---|---:|---:|---:|" + "---:|" * len(names)] + index + [""]
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -572,7 +508,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("prompts", help="one status-log prompt per episode")
     p.add_argument("--captions", required=True, help="caption_merge.py run output folder")
     p.add_argument("--kinematic", required=True)
-    p.add_argument("--version", choices=sorted(INSTRUCTIONS), default="v2", help="instruction after the log")
+    p.add_argument("--version", choices=sorted(INSTRUCTIONS), default="v6",
+                   help=f"instruction after the log, from {PROMPTS}")
+    p.add_argument("--instruction", help="an instruction file instead of --version (its name is the version)")
     p.add_argument("--out", required=True)
     a = sub.add_parser("ask", help="answers from a provider of autolabel's VL client")
     a.add_argument("--prompts", required=True)

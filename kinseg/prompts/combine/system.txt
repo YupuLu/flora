@@ -1,0 +1,1 @@
+You combine short phases of a robot demonstration into subtasks. Answer in JSON only.

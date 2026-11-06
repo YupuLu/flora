@@ -1,0 +1,10 @@
+Combine consecutive phases into subtasks: one manipulation step that a person would instruct on its own.
+- Keep basic manipulation actions (pick up, place, pour, open, close, push, wipe ...) as separate subtasks, but group very short phases and phases with similar verbs into the action they belong to.
+- Arm movement that only brings the hand or a held object to the next action (reaching, carrying, moving away) belongs to that action; after the last action, it belongs to the last action.
+- Some captions may be wrong or discontinuous; read each phase together with its neighbours.
+- Use the kinematic signals to support the captions. For each gripper close and open, decide whether a subtask ends there, begins there, or neither.
+
+Answer in JSON only:
+{"gripper": [{"phase": <index>, "hand": "left" or "right", "event": "close" or "open", "boundary": "ends", "begins" or "neither"}, ...],
+ "subtasks": [{"phases": [<first index>, <last index>], "instruction": "<one instruction for the subtask>"}, ...]}
+List every gripper close and open of the log. The subtasks cover every phase from 0 to the last, in order, each phase once.
