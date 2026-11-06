@@ -2,7 +2,7 @@
 
 FLORA's prompt is a camera heading (three cameras only), the video blocks and a fixed instruction; an
 episode instruction, when given, follows as a JSON line. Ours keeps the heading, the blocks and the
-instruction, with two changes:
+instruction (``build`` for one camera, ``build_three`` for FLORA's three-camera mosaic), with two changes:
 
 * episode information is written as plain lines between the video blocks and the instruction: the task
   brief, the objects, the robot kinematics during TARGET and the previous interval's instruction, and,
@@ -101,6 +101,26 @@ def build(sample: Dict[str, object], video_token: str, items: Dict[str, str], no
         raise RuntimeError("FLORA's prompt layout changed; update caption_prompt.build")
     extra = information(items, notes)
     return native[: len(native) - len(base)] + (extra + "\n\n" if extra else "") + instruction(roles, base)
+
+
+def build_three(plan: Dict[str, object], video_token: str, items: Dict[str, str], notes: bool,
+                heading: Optional[str] = None, base: Optional[str] = None) -> str:
+    """The same for FLORA's three-camera caption plan: its mosaic heading and blocks (each with its frame
+    timestamps, as ``three_view_caption_inputs`` writes them), our information, our instruction."""
+    from fractions import Fraction
+
+    if heading is None or base is None:
+        from plans import HEADING, INSTRUCTION  # FLORA's vendored three-camera prompt parts
+        heading = HEADING if heading is None else heading
+        base = INSTRUCTION if base is None else base
+    time_base = Fraction(str(plan["time_base"]))
+    parts = [heading]
+    for block in plan["blocks"]:
+        times = ", ".join(f"{float(t * time_base):.9f}" for t in block["pts_ticks"])
+        parts.append(f"{block['role']}:\nFrames are in this order; native source timestamps in seconds: "
+                     f"[{times}].\n{video_token}")
+    extra = information(items, notes)
+    return "".join(parts) + (extra + "\n\n" if extra else "") + instruction([b["role"] for b in plan["blocks"]], base)
 
 
 def objects_line(scene: Optional[Dict[str, object]]) -> str:

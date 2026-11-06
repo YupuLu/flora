@@ -384,3 +384,21 @@ def test_nero_despike():
     assert np.isfinite(out[8:12]).all()                           # a real opening: next value 0.92
     assert np.isfinite(despike(np.array([0.0, 1.0, 1.0, 1.0, 1.0, 0.0]))).all()   # four frames: kept
     assert np.isfinite(despike(np.array([1.0, 1.0, 0.0]))).all()  # at the start: no neighbour before
+
+
+def test_caption_prompt_three_cameras():
+    from caption_prompt import FLORA_CONTEXT, build_three
+
+    heading = "Each frame is a camera mosaic.\n\n"
+    base = "Infer the local goal. " + FLORA_CONTEXT + " A failed attempt keeps its instruction."
+    block = lambda role, ticks: dict(role=role, pts_ticks=ticks)   # noqa: E731
+    plan = dict(time_base="1/15", blocks=[block("BEFORE", [0, 15]), block("TARGET", [30, 45]), block("AFTER", [60])])
+    flora = (heading + "BEFORE:\nFrames are in this order; native source timestamps in seconds: "
+             "[0.000000000, 1.000000000].\n<V>TARGET:\nFrames are in this order; native source timestamps in "
+             "seconds: [2.000000000, 3.000000000].\n<V>AFTER:\nFrames are in this order; native source "
+             "timestamps in seconds: [4.000000000].\n<V>")
+    assert build_three(plan, "<V>", {}, False, heading, base) == flora + base   # FLORA's own text
+    text = build_three(plan, "<V>", dict(brief="Move the cup"), False, heading, base)
+    assert text == flora + "Episode information:\nTask brief: Move the cup\n\n" + base
+    two = dict(plan, blocks=plan["blocks"][1:])
+    assert "Use AFTER only to disambiguate TARGET" in build_three(two, "<V>", {}, False, heading, base)

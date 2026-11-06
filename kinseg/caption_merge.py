@@ -276,7 +276,70 @@ def caption_subset(pipeline, videos, segments, todo, profile, session, prompt_fo
     return out
 
 
-def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, object]], pipeline):
+def caption_subset_three(pipeline, videos, segments, todo, session, prompt_for, context: str = "both",
+                         group: str = "YAM") -> Dict[int, Dict[str, str]]:
+    """``caption_subset`` for three cameras: FLORA's ``caption_three`` (its plans, mosaic and input geometry)
+    for ``segments[k]``, ``k`` in ``todo``; ``prompt_for`` receives FLORA's three-camera plan as ``sample``.
+
+    Before the first caption with our message, the message without information is checked against the
+    text of FLORA's ``three_view_caption_inputs``, so a change of FLORA's layout stops the run.
+    """
+    from fractions import Fraction
+    from math import lcm
+
+    from batch_utils.preprocessing import three_view_caption_inputs
+    from plans import plans_for_episode
+    from robot_caption_geometry import normalized, source_frames
+    from transformers.video_utils import VideoMetadata
+    import caption_prompt
+
+    roles = CONTEXT_ROLES[context]
+    main = videos["main"]
+    scale = lcm(*(t.denominator for t in main.pts_us)) * 1000000
+    clock = dict(ticks=[int(t * scale / 1000000) for t in main.pts_us], time_base=str(Fraction(1, scale)),
+                 fps=str(main.rate), duration_s=main.duration_s, first_pts=0)
+    episode = dict(episode_id="upload", source_id=main.sha256, group=group, units=[])
+    model, proc = session.load("captioner")
+
+    def chat(content):
+        return proc.apply_chat_template([dict(role="user", content=content)], tokenize=False,
+                                        add_generation_prompt=True, enable_thinking=False)
+
+    out: Dict[int, Dict[str, str]] = {}
+    checked = False
+    for k in sorted(todo):
+        s = segments[k]
+        unit = dict(target_id=f"event_{k:04d}", unit_id=f"prediction:{k}", native_scope_s=[s["start_s"], s["end_s"]])
+        try:
+            plan = plans_for_episode(dict(episode, units=[unit]), {role: clock for role in videos})[0]
+        except AssertionError:
+            out[k] = dict(caption="", status="unsupported_target_frames")
+            continue
+        plan = dict(plan, blocks=[b for b in plan["blocks"] if b["role"] in roles])
+        frames = source_frames(normalized(plan, pipeline.frames_for(
+            videos, {j for b in plan["blocks"] for j in b["indices"]}, mosaic=group)))
+        previous = (out[k - 1]["caption"] if k - 1 in out else segments[k - 1].get("caption", "")) if k else ""
+        content = prompt_for(k, previous, s, plan, proc.video_token)
+        if content is None:
+            inputs, _ = three_view_caption_inputs(plan, frames, proc, "")
+        else:
+            if not checked and len(plan["blocks"]) == 3:
+                if chat(caption_prompt.build_three(plan, proc.video_token, {}, False)) != \
+                        three_view_caption_inputs(plan, frames, proc, "")[1]:
+                    raise RuntimeError("FLORA's three-camera prompt changed; update caption_prompt.build_three")
+                checked = True
+            metadata = [VideoMetadata(total_num_frames=len(b["indices"]), fps=float(Fraction(plan["clock_fps"])),
+                                      frames_indices=[i - b["source_start_frame"] for i in b["indices"]])
+                        for b in plan["blocks"]]
+            inputs = proc(text=[chat(content)], videos=[[frames[i] for i in b["indices"]] for b in plan["blocks"]],
+                          video_metadata=metadata, do_sample_frames=False, return_tensors="pt", padding=True)
+        out[k] = dict(caption=pipeline.generate(model, proc, inputs, 512), status="complete",
+                      prompt="" if content is None else content.replace(proc.video_token, "<video>"))
+    return out
+
+
+def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, object]], pipeline,
+                   three: bool = False):
     """``prompt_for(k, previous, segment, sample, video_token)`` for one episode.
 
     ``--prompt field`` (FLORA's prompt; the text goes into its episode-instruction field): --instruction
@@ -284,7 +347,8 @@ def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, obje
     background text, and with none of them FLORA's own prompt is used. ``--prompt template``
     (``caption_prompt.py``): FLORA's prompt with the information from --brief / --objects (from --scenes) /
     --kinematics / --previous written between the video blocks and the instruction, --notes on how to
-    use it, and the instruction's context sentence matched to the blocks sent.
+    use it, and the instruction's context sentence matched to the blocks sent. ``three``: the episode has
+    FLORA's three cameras (``sample`` is then FLORA's three-camera plan; template prompt or FLORA's own only).
     """
     import background
     import caption_prompt
@@ -301,8 +365,11 @@ def episode_prompt(args, case: Dict[str, object], scene: Optional[Dict[str, obje
                          kinematics=(kinematics(case, segment["start_s"], segment["end_s"])
                                      if args.kinematics else ""),
                          previous=previous if args.previous else "")
-            return caption_prompt.build(sample, video_token, items, args.notes)
+            return (caption_prompt.build_three if three else caption_prompt.build)(sample, video_token, items,
+                                                                                   args.notes)
         return prompt_for
+    if three and (args.instruction or args.background != "none" or args.robot_state or args.previous):
+        raise ValueError("three cameras: use --prompt template, or FLORA's own prompt")
 
     def prompt_for(k, previous, segment, sample, video_token):
         if args.instruction:  # FLORA's plain episode instruction: the task sentence alone
@@ -323,6 +390,10 @@ def run(args) -> int:
 
     local_models.configure()
     kin = {json.loads(p.read_text())["id"]: p for p in Path(args.kinematic).glob("predictions/*/*.json")}
+    jobs = {row["id"]: row for row in (json.loads(line) for line in Path(args.jobs).read_text().splitlines()
+                                       if line.strip())} if args.jobs else {}
+    if not args.videos and not set(args.episodes) <= set(jobs):
+        raise SystemExit("give --videos, or --jobs with every episode")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     session = Session()
@@ -338,18 +409,23 @@ def run(args) -> int:
         tempseg = json.loads((Path(args.tempseg) / f"{episode}.json").read_text()) if args.cuts == "union" else None
         scene = (json.loads((Path(args.scenes) / f"{episode}.json").read_text())
                  if args.scenes and (Path(args.scenes) / f"{episode}.json").exists() else None)
-        prompt_for = episode_prompt(args, case, scene, pipeline)
-        videos, _ = engine._inputs(str(Path(args.videos) / f"{episode}.mp4"), PROFILES[args.profile], None, None,
-                                   False, "")
+        job = jobs.get(episode) or dict(video=str(Path(args.videos) / f"{episode}.mp4"))
+        videos, _ = engine._inputs(job["video"], PROFILES[args.profile], job.get("left_wrist"),
+                                   job.get("right_wrist"), False, "")
+        three = len(videos) == 3
+        prompt_for = episode_prompt(args, case, scene, pipeline, three)
         intervals = initial_intervals(case, tempseg)
         for item in intervals:
             item["status"], item["caption"] = None, ""
         rounds, started = [], time.monotonic()
         for r in range(args.rounds):
             todo = {k for k, item in enumerate(intervals) if item["status"] is None or item.get("joined")}
-            rows = caption_subset(pipeline, videos,
-                                  [dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in intervals],
-                                  todo, PROFILES[args.profile], session, prompt_for, args.context)
+            listed = [dict(start_s=i["start_s"], end_s=i["end_s"], caption=i["caption"]) for i in intervals]
+            rows = (caption_subset_three(pipeline, videos, listed, todo, session, prompt_for, args.context,
+                                         "Dex" if PROFILES[args.profile] in ("Dex", "Tianji") else "YAM")
+                    if three else
+                    caption_subset(pipeline, videos, listed, todo, PROFILES[args.profile], session, prompt_for,
+                                   args.context))
             for k, row in rows.items():
                 intervals[k].update(caption=row["caption"], status=row["status"], joined=False,
                                     prompt=row.get("prompt", ""))
@@ -363,6 +439,7 @@ def run(args) -> int:
                 break
             intervals = joined
         record = dict(id=episode, family=case["family"], cuts=args.cuts, task=case.get("instruction", ""),
+                      cameras=list(videos),
                       plain_instruction=args.instruction, background=args.background, context=args.context,
                       previous=args.previous, robot_state=args.robot_state, prompt=args.prompt,
                       template=dict(brief=args.brief, objects=args.objects, kinematics=args.kinematics,
@@ -511,7 +588,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run")
     r.add_argument("--kinematic", required=True)
-    r.add_argument("--videos", required=True, help="folder of <episode>.mp4")
+    r.add_argument("--videos", help="folder of <episode>.mp4 (one camera)")
+    r.add_argument("--jobs", help="JSONL of FLORA annotation jobs (id, video, optional left_wrist and right_wrist); "
+                                  "with wrist videos the episode is captioned from FLORA's three-camera mosaic")
     r.add_argument("--episodes", nargs="+", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--cuts", choices=("ours", "union"), default="ours")

@@ -25,6 +25,7 @@ segments:
     python kinseg/combine.py ask --prompts <dir> --provider openlux-codex-gpt-1 --autolabel <checkout> --out <dir>
     python kinseg/combine.py score --prompts <dir> --answers NAME=DIR ... --autolabel <checkout> \\
         --kinematic <run> --tempseg <dir> --out <file> [--segments <dir>]
+    python kinseg/combine.py segments --prompts <dir> --answers <dir> --kinematic <run> --out <dir>
 
 ``ask`` sends one text-only request per episode through autolabel's VL client (the key comes from the
 provider's environment variable or ``pass`` entry) and saves the answer with its settings and usage.
@@ -80,8 +81,14 @@ def hands(case: Dict[str, object]) -> Tuple[str, ...]:
     return ("left", "right") if two else ("right",)
 
 
+def mobile(case: Dict[str, object]) -> bool:
+    """Whether the base moves in any phase (fixed-base episodes have only 'STABLE')."""
+    return any(p.get("base", "STABLE") != "STABLE" for p in case["predictions"])
+
+
 def status(case: Dict[str, object], k: int, robot_hands: Sequence[str]) -> str:
-    """Motion and gripper changes of phase ``k``: 'still', 'right moves', 'both move, left closes' …"""
+    """Motion and gripper changes of phase ``k``: 'still', 'right moves', 'both move, left closes',
+    'base moves', 'right moves, base moves' …"""
     from merge import gripper_events
 
     phase = case["predictions"][k]
@@ -89,6 +96,8 @@ def status(case: Dict[str, object], k: int, robot_hands: Sequence[str]) -> str:
     motion = {"STABLE": "still", "BOTH": "both move"}.get(arm, f"{arm.lower()} moves")
     if len(robot_hands) == 1 and arm != "STABLE":
         motion = "moves"
+    if phase.get("base", "STABLE") != "STABLE":
+        motion = "base moves" if arm == "STABLE" else motion + ", base moves"
     changes = [(f"{a.lower()} " if len(robot_hands) > 1 else "") + ("closes" if kind == "close" else "opens")
                for a, kind, t0, _ in gripper_events(case) if phase["start_sec"] <= t0 < phase["end_sec"]]
     return ", ".join([motion] + changes)
@@ -98,10 +107,13 @@ def episode_log(case: Dict[str, object], phases: List[Dict[str, object]], versio
                 instruction: Optional[str] = None) -> str:
     """The user prompt for one episode: task, robot, phase log and ``instruction`` (default: ``version``'s)."""
     robot_hands = hands(case)
+    base = " on a mobile base" if mobile(case) else ""
     lines = [f"Task: {str(case.get('instruction', '')).strip()}",
-             "Robot: " + ("one arm (right hand)." if len(robot_hands) == 1 else "two arms (left and right hands)."),
+             "Robot: " + ("one arm (right hand)" if len(robot_hands) == 1 else "two arms (left and right hands)")
+             + base + ".",
              "",
-             "Phases. Time in seconds; hand motion and gripper changes are measured from the robot; each "
+             "Phases. Time in seconds; " + ("hand and base motion" if base else "hand motion")
+             + " and gripper changes are measured from the robot; each "
              "instruction was written by a video captioner for that phase alone and can be wrong."]
     for k, p in enumerate(phases):
         caption = (p.get("caption") or "").strip() if p.get("status", "complete") == "complete" else ""
@@ -568,6 +580,40 @@ def examples(args) -> int:
     return 0
 
 
+def labelled(segments: List[Tuple[float, float]], ranges: List[Tuple[int, int, str]],
+             phases: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Segments with the instruction of the model's subtask they overlap most."""
+    def overlap(seg, r):
+        return min(seg[1], phases[r[1]]["end_s"]) - max(seg[0], phases[r[0]]["start_s"])
+    return [dict(start_s=a, end_s=b, instruction=max(ranges, key=lambda r: overlap((a, b), r))[2] if ranges else "")
+            for a, b in segments]
+
+
+def segments(args) -> int:
+    """C1 and C5 per episode with the model's instructions, for data without references (no scores)."""
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    kin = load_kinematic(Path(args.kinematic))
+    for path in sorted(Path(args.prompts).glob("*.json")):
+        item = json.loads(path.read_text())
+        episode, phases = item["id"], item["phases"]
+        case = kin[episode]
+        apath = Path(args.answers) / f"{episode}.json"
+        answer = parse_answer(json.loads(apath.read_text()).get("answer")) if apath.exists() else None
+        ranges, repairs = subtask_ranges(answer, len(phases)) if answer else ([], ["no answer"])
+        confirmed = confirmed_events(answer, case, phases) if answer else []
+        c1 = [(phases[a]["start_s"], phases[b]["end_s"]) for a, b, _ in ranges]
+        c5 = anchored(ranges, phases, confirmed) if ranges and asks_gripper(item) else c1
+        record = dict(id=episode, family=item["family"], task=case.get("instruction", ""),
+                      answers=str(args.answers), repairs=repairs,
+                      subtasks=[dict(phases=[a, b], instruction=label) for a, b, label in ranges],
+                      confirmed=[dict(arm=e[0], kind=e[1], start_sec=e[2], end_sec=e[3]) for e in confirmed],
+                      C1=labelled(c1, ranges, phases), C5=labelled(c5, ranges, phases))
+        (out / f"{episode}.json").write_text(json.dumps(record, indent=1) + "\n")
+        print(f"{episode}: {len(c1)} subtasks, {len(confirmed)} confirmed events" + (f"; {repairs}" if repairs else ""))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="command", required=True)
@@ -607,10 +653,16 @@ def main(argv=None) -> int:
     e.add_argument("--tempseg", required=True)
     e.add_argument("--episodes", nargs="+", help="only these episodes")
     e.add_argument("--out", required=True)
+    g = sub.add_parser("segments", help="C1 and C5 with the model's instructions, without scores")
+    g.add_argument("--prompts", required=True)
+    g.add_argument("--answers", required=True, help="answer folder")
+    g.add_argument("--kinematic", required=True)
+    g.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     if args.command in ("ask", "score", "examples") and not args.autolabel:
         ap.error("give --autolabel or set AUTOLABEL_ROOT")
-    return {"prompts": prompts, "ask": ask, "score": score, "examples": examples}[args.command](args)
+    return {"prompts": prompts, "ask": ask, "score": score, "examples": examples,
+            "segments": segments}[args.command](args)
 
 
 if __name__ == "__main__":
