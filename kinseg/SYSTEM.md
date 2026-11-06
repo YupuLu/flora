@@ -1286,55 +1286,56 @@ the grasp's phase. In practice sol confirms almost every event (Galaxea 102 of
 102; DROID 142 of 156), so the verdicts matter only where they reject one: on
 held-out DROID that makes C3 the best DROID result (0.605 against 0.579).
 
-### 5.8 Transitions marked by the model, attached by setting (v7, 2026-11-06)
+### 5.8 Semantic evaluation: are the labels right? (2026-11-06)
 
-To keep the pipeline independent of TempSeg and of one dataset's
-convention, v7 (`prompts/combine/v7.txt`) is v6 plus one request: list every
-phase that is only a transition between actions, with its type (reach, lift,
-carry, retreat). The model still puts those phases in subtasks as in v6. C7
-then moves a transition phase that sits at the edge of a subtask to the
-neighbouring subtask, on the side a dataset setting gives for its type
-(`score --attach lift=next,retreat=next`); C8 adds the grasp anchors of C5.
-No TempSeg output is used. Sol, 26 tuning episodes, two runs:
+WGO-Bench's semantic scores, implemented in `semantic_eval.py` (Macrodata Labs
+published the judge prompt and the metric definitions in their blog post, but
+no scoring code). The judge prompt is `prompts/semantic/wgo_judge.txt`,
+verbatim from the post; the judge is the protocol's `gemini-3.5-flash`
+(provider `openlux-anti-gemini-1` in `prompts/semantic/providers.json`). It
+gets the gold label, the predicted label and the episode instruction and
+answers `{"match": true|false}`; it accepts the same event with the right
+action, main object and, when central, source or destination, and ignores
+wording and timing.
 
-| F1@0.75 (F1@0.5) | Galaxea run 1 / 2 | DROID run 1 / 2 |
-|---|---:|---:|
-| TempSeg | 0.676 (0.835) | 0.530 (0.747) |
-| TempSeg + gripper split | 0.681 (0.851) | 0.587 (0.804) |
-| v6 C1 (for comparison) | 0.511 / 0.526 | 0.578 / 0.622 |
-| v6 C5, grasp anchors | 0.571 / 0.571 | 0.578 / 0.622 |
-| v7 C1, model's subtasks | 0.511 / 0.456 (0.902 / 0.868) | 0.562 / 0.562 (0.787 / 0.764) |
-| v7 C7, lift=next, retreat=next | **0.571 / 0.529** (0.902 / 0.868) | **0.607 / 0.607** (0.787 / 0.742) |
-| v7 C7, lift=previous, retreat=next | 0.511 / 0.485 | 0.562 / 0.539 |
-| v7 C7, lift=next, retreat=previous | 0.511 / 0.500 | 0.562 / 0.562 |
-| v7 C7, lift=previous, retreat=previous | 0.406 / 0.412 | 0.517 / 0.517 |
-| v7 C8, lift=next, retreat=next + grasp anchors | 0.556 / 0.515 | 0.584 / 0.584 |
+- *Label accuracy on temporal matches*: of the segments that match a
+  reference in time (one-to-one, tIoU at least the threshold), the share whose
+  label the judge accepts.
+- *Semantic F1*: a pair counts only if its tIoU passes and the judge accepts
+  the label; one-to-one matching over those pairs, outer edges snapped.
+- *Gold-window label accuracy*: labels written for the reference windows
+  themselves, judged against the reference labels (segmentation excluded).
 
-- **One setting helps both families: lift and retreat go to the next
-  action** (+0.06 / +0.07 on Galaxea, +0.045 on DROID over v7's own subtasks).
-  It is what v6's movement line asks for; the model labels the lift as a
-  transition but keeps it in the pick-up, and C7 enforces the rule in code.
-  Every other setting loses, most when retreats go back to the previous action
-  (Galaxea 0.41).
-- **The setting predicted from the references was wrong for DROID.** DROID's
-  reference pick-ups end 1.7 s after the close command (§5.7), which
-  suggested lift=previous; it scored 0.562 / 0.539 against 0.607 / 0.607 for
-  lift=next. DROID's command-based gripper times are a poor guide; a setting
-  should be chosen by scoring a few annotated episodes, not by that
-  measurement alone.
-- **The gain is convention.** With transitions forgiven (regions capped at
-  1 s), C7 equals C1 on Galaxea (0.677 / 0.632 against 0.677 / 0.662) and is
-  close on DROID (0.629 / 0.629 against 0.607 / 0.584).
-- **Without TempSeg, Galaxea stays about 0.1 below it** (best 0.571 against
-  0.676) while DROID is above it (0.607 against 0.530, and above the gripper
-  split's 0.587). What is left on Galaxea is where our phase cuts lie (median
-  0.46 s from the reference against TempSeg's 0.27 s), not which side a phase
-  goes to.
-- Asking for transitions costs v7's own grouping a little (C1 Galaxea 0.456
-  in run 2), within the run-to-run noise of about 0.05.
+The judge repeated on the same 354 pairs agrees with itself on 97.7 %.
+Rejections are mostly wrong objects ("Pick up the staple gun" for "pick up
+the white plug"), sometimes a wrong source or destination.
 
-Files: `outputs/kinseg/combine/T4_v7/` (answers, `score_<setting>.md`,
-`transition_<setting>.md`).
+| All 75 episodes, tIoU 0.75 (0.5) | Galaxea: label acc. on matches | Galaxea: semantic F1 | DROID: label acc. on matches | DROID: semantic F1 |
+|---|---:|---:|---:|---:|
+| FLORA's pipeline (TempSeg segments + Captioner, default inputs) | 0.84 (0.82) | **0.579** (**0.718**) | 0.36 (0.32) | 0.204 (0.241) |
+| v6 run 1, model's subtasks (C1), sol's instructions | 0.77 (0.73) | 0.416 (0.686) | **0.87** (0.81) | 0.498 (**0.665**) |
+| v6 run 2, C1 | 0.77 (0.75) | 0.449 (0.702) | 0.84 (0.79) | 0.486 (0.648) |
+| v6 run 1, snapped (C4) | 0.75 (0.74) | 0.498 (0.694) | 0.86 (0.81) | **0.518** (0.658) |
+
+Gold-window label accuracy of the Captioner (FLORA's default inputs on the
+reference windows): Galaxea 0.772 (95/123), DROID 0.313 (47/150).
+
+- **DROID: our pipeline is far better semantically** (0.50-0.52 against 0.20
+  at 0.75). The Captioner without text misreads DROID's objects: even on the
+  gold windows it is right on only 31 % of DROID subtasks, against 84-87 % of
+  v6's matched segments, whose instructions sol writes from the T4 captions
+  (captioned with the task brief and object list) and the task sentence.
+- **Galaxea: FLORA's pipeline is better** (0.579 against 0.42-0.50): its
+  boundaries are better (temporal F1 0.687 against 0.54-0.66) and its labels
+  slightly better (0.84 against 0.75-0.77 on matches). At tIoU 0.5 the two are
+  close (0.718 against 0.69-0.70).
+- For reference, Macrodata's best pipeline on all of WGO-Bench (with human
+  videos) reports 61.0 % gold-window accuracy, 78.1 % label accuracy on
+  temporal matches and a semantic F1 of 0.168-0.201.
+
+Outputs: `outputs/kinseg/semantic/` (judge cache `judge_gemini35.jsonl`,
+`flora_vs_v6.md`, `gold_captioner.md`, the Captioner runs `captions_tempseg`
+and `captions_gold`).
 
 ## 6. Results (all 75 episodes unless noted)
 
