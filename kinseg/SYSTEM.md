@@ -1353,6 +1353,42 @@ No TempSeg output is used. Sol, 26 tuning episodes, two runs:
 Files: `outputs/kinseg/combine/T4_v7/` (answers, `score_<setting>.md`,
 `transition_<setting>.md`).
 
+**The switch in the prompt instead (v6-free).** v7's extra request changed the
+grouping a lot: v6's two runs give identical subtasks in 24 of 26 episodes,
+v6 and v7 in 13-17, v7's two runs in 16. A smaller change keeps v6 and only
+rewords its movement line with a group name instead of a list of verbs
+(`prompts/combine/v6-free.txt`):
+
+> Free movement, where the hand only moves (empty or with what it already
+> holds) without grasping, releasing or acting on anything, belongs to the next
+> action; after the last action, it belongs to the last action.
+
+The other convention is `v6-free-previous.txt` ("… belongs to the action it
+follows, until the hand starts toward the next action; before the first
+action, it belongs to the first action"), not run. Sol, 26 episodes, two runs,
+no TempSeg:
+
+| F1@0.75 (F1@0.5) | Galaxea run 1 / 2 | DROID run 1 / 2 |
+|---|---:|---:|
+| v6 C1 | 0.511 / 0.526 (0.917) | 0.578 / 0.622 (0.778 / 0.844) |
+| v6 C5, grasp anchors | 0.571 / 0.571 | 0.578 / 0.622 |
+| v7 C7, lift and retreat → next | 0.571 / 0.529 | 0.607 / 0.607 |
+| **v6-free C1** | 0.522 / 0.482 (0.896 / 0.876) | **0.607 / 0.607** (0.831 / 0.787) |
+| v6-free C5, grasp anchors | 0.552 / 0.496 | 0.607 / 0.607 |
+
+- **The line moves the cuts the intended way** but does not make them more
+  precise. Galaxea's pick-up ends move earlier, as asked (median offset from
+  the reference after a grasp +0.26 s with v6, +0.14 / 0.00 s with v6-free),
+  yet the same 9 of 31 cuts lie within 0.25 s of the reference: the cuts are
+  still on our phase boundaries, which are a phase apart.
+- **Even one reworded line changes many answers.** v6-free and v6 give
+  identical subtasks in 13-15 of 26 episodes, and v6-free's own two runs in 19
+  (v6: 24). Galaxea does not improve (0.522 / 0.482); DROID is steady at
+  0.607 in both runs, above TempSeg (0.530) and its gripper split (0.587).
+- Neither a prompt switch nor a code switch closes Galaxea's gap to TempSeg
+  without TempSeg's cuts (best 0.571 against 0.676); the cut candidates are
+  the limit.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
