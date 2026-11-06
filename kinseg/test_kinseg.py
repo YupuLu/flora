@@ -372,3 +372,15 @@ def test_number_detection():
     assert NUMBER_START.search(text).group(1) == "s"
     assert [int(s) for s in ROW_START.findall(text)] == [40]
     assert NUMBER_START.search('{"segments":') is None and NUMBER_START.search('"lo":') is None
+
+
+def test_nero_despike():
+    import numpy as np
+    from nero import despike
+
+    u = np.array([0.18, 0.18, 1.0, 1.0, 1.0, 0.18, 0.2, 0.42, 1.0, 1.0, 0.92, 1.0, 0.75, 0.23, 1.0, 0.2])
+    out = despike(u)
+    assert np.isnan(out[2:5]).all() and np.isnan(out[14])        # 1-3 frame jumps between low values
+    assert np.isfinite(out[8:12]).all()                           # a real opening: next value 0.92
+    assert np.isfinite(despike(np.array([0.0, 1.0, 1.0, 1.0, 1.0, 0.0]))).all()   # four frames: kept
+    assert np.isfinite(despike(np.array([1.0, 1.0, 0.0]))).all()  # at the start: no neighbour before

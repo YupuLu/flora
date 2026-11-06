@@ -119,6 +119,38 @@ python kinseg/caption_examples.py --autolabel <checkout> --kinematic <run> --tem
 Join rules are listed in `JOINS` at the top of `caption_examples.py`; a new
 rule added there appears for every run.
 
+### Nero Dog, our collected data (`nero.py`, 2026-11-06)
+
+`nero.py` writes kinematic phases of Nero Dog LeRobot episodes in the same
+`predictions/<group>/<id>.json` format (no references), with the settings of
+`nero_dog.toml` (autolabel's `full_body` reference: speed mode 1, gripper
+opening 0 closed to 1 open, no torso). Jobs are the FLORA run's
+`selection.json`; parquet files are read from a local copy.
+
+```bash
+python kinseg/nero.py --autolabel <checkout> --jobs <run>/selection.json \
+    --source outputs/kinseg/nero/source --out outputs/kinseg/nero/kinematic_mode1
+```
+
+The 70 episodes of the FLORA pilot (7 tasks, 53 min), per episode (median):
+
+| Task | Speed mode 0: phases (length) | Mode 1 | Mode 2 | Gripper closes / opens |
+|---|---:|---:|---:|---:|
+| door_enter | 9 (2.9 s) | 9 (2.6 s) | 11.5 (2.0 s) | 0 / 0 |
+| door_exit | 13 (2.9 s) | 16.5 (2.1 s) | 22 (1.3 s) | 0 / 0 |
+| give_water | 3 (2.4 s) | 3 (1.9 s) | 5 (1.1 s) | 1 / 1 |
+| grasp_water | 8.5 (3.3 s) | 10.5 (2.0 s) | 15 (1.3 s) | 4 / 2 |
+| move_water | 17.5 (3.5 s) | 22.5 (2.3 s) | 36.5 (1.3 s) | 2 / 2 |
+| place_water | 7 (3.1 s) | 8.5 (2.5 s) | 13 (1.3 s) | 2 / 2 |
+| put_bag | 13.5 (3.0 s) | 15.5 (2.7 s) | 18 (2.3 s) | 1 / 1 |
+
+Gripper events do not depend on the mode. The water and bag robots' gripper
+state sometimes reads 1.00 for 1-3 frames between closed values; `despike`
+removes these (343 frames in 70 episodes), which otherwise add an
+open-close pair each. The door robot's gripper reads 0-0.024 (in the one
+enter episode checked, the fingers stay together in the wrist video
+throughout), so door episodes have no gripper events.
+
 ## Remote server
 
 `kinseg/remote/flora-remote` drives a remote development server whose account

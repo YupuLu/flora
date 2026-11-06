@@ -1,0 +1,27 @@
+# Nero Dog (mobile base, no torso, two Nero arms; LeRobot v2.1 at 15 Hz), from
+# autolabel's full_body reference: speed mode 1, as the demonstrations are
+# whole-body teleoperation with base motion. Read by kinseg/nero.py with
+# autolabel.settings.load; the keys are autolabel's settings schema.
+reference = "full_body"
+
+[data]
+root = "outputs/kinseg/nero/source"
+
+[segmentation]
+speed_mode = 1
+close_containment = "off"
+# observation.state[6] / [13]: 0 closed, 1 open on the water and bag robots
+# (about 0.2 while holding a bottle). The door robot's 0-0.024 toggle is far
+# below the minimum travel, so its episodes have no gripper events.
+gripper_opening_range = [0.0, 1.0]
+gripper_command_only_events = false
+torso_induced_fallback = false
+
+[describe]
+task = ""
+max_pixel_side = 720
+triptych_layout = "vertical"
+provider = ""
+model = ""
+reasoning_effort = ""
+gripper_events = false
