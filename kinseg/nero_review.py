@@ -31,6 +31,7 @@ DIM = "&H00B8A99A&"
 FILL = ("&H00C08A3E&", "&H006F5A2E&")      # alternating segment colours (BGR)
 CURSOR = "&H003050FF&"
 TIMELINES = (("our phases", "phases"), ("ours", "ours"), ("FLORA", "flora"))
+METHODS = {"C1": "the model's subtasks, C1", "C5": "cuts anchored at confirmed grasps, C5"}
 
 
 def at(seconds: float) -> str:
@@ -171,7 +172,7 @@ def render(job, ass_text: str, out: Path) -> None:
     temp.replace(out)
 
 
-def page(rows) -> str:
+def page(rows, method: str) -> str:
     cards = []
     for job, phases, captions, ours, flora in rows:
         def listing(items, key):
@@ -193,7 +194,7 @@ def page(rows) -> str:
             "summary{cursor:pointer;margin:6px 0}</style><h1>Nero Dog: ours vs FLORA</h1>"
             "<p>Ours: kinematic phases (autolabel, full_body settings, speed mode 1), Flora-Captioner per phase "
             "(three cameras, our template: task brief, objects, previous instruction, notes), combined into "
-            "subtasks by gpt-6.1-sol (instruction v6, cuts anchored at confirmed grasps, C5). FLORA: "
+            "subtasks by gpt-6.1-sol (instruction v6; " + METHODS[method] + "). FLORA: "
             "TempSeg + Captioner of the seven-task pilot (20261105_seven_tasks_10_each). Model predictions; "
             "not verified.</p>" + "".join(cards))
 
@@ -205,7 +206,7 @@ def main(argv=None) -> int:
     ap.add_argument("--captions", required=True)
     ap.add_argument("--segments", required=True)
     ap.add_argument("--flora", required=True, help="FLORA run folder with captioner/<id>/annotations.json")
-    ap.add_argument("--method", default="C5", choices=("C1", "C5"))
+    ap.add_argument("--method", default="C1", choices=sorted(METHODS))
     ap.add_argument("--out", required=True)
     ap.add_argument("--no-video", action="store_true", help="only the page")
     args = ap.parse_args(argv)
@@ -228,7 +229,7 @@ def main(argv=None) -> int:
             render(job, subtitles(job, case["duration_sec"], case["predictions"], ours, flora),
                    out / "media" / f"{job['id']}.mp4")
             print("rendered", job["id"], flush=True)
-    (out / "index.html").write_text(page(rows))
+    (out / "index.html").write_text(page(rows, args.method))
     print(f"wrote {out / 'index.html'} ({len(rows)} episodes)")
     return 0
 
