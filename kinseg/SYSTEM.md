@@ -928,6 +928,14 @@ Over all 75 episodes:
 The touching phases cover 17.5 % (Galaxea) and 13.3 % (DROID) of the
 annotated time; with one more phase on each side, 42.3 % and 28.4 %.
 
+At tIoU 0.5 (`--threshold 0.5`, touching phases) the convention matters much
+less: v6 C1 0.939 → 0.988 (Galaxea) and 0.824 / 0.816 → 0.837 / 0.841 (DROID),
+TempSeg 0.857 → 0.865 and 0.752 → 0.752. v6's grouping is ahead at 0.5 with or
+without forgiving; at 0.75 the attachment of free movements decides the
+comparison. (With one more phase on each side, Galaxea C1 at 0.5 is 0.971:
+larger regions can move an endpoint onto a neighbouring cut, so the score is
+not monotonic in the region size.)
+
 - **The convention costs v6 0.21-0.24 on Galaxea and 0.06-0.07 on DROID**, TempSeg
   0.05 and 0.01. Forgiving only the movement in the phases touching each cut,
   the model's own subtasks, without any post-processing, beat TempSeg on both

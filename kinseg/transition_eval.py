@@ -117,6 +117,7 @@ def main(argv=None) -> int:
     ap.add_argument("--segments", nargs="+", default=[], help="NAME=DIR segment folders")
     ap.add_argument("--keys", nargs="+", default=["C1", "C4"], help="segment lists to score in each file")
     ap.add_argument("--neighbours", type=int, default=0, help="phases beyond those touching a cut")
+    ap.add_argument("--threshold", type=float, default=0.75, help="tIoU threshold of a match")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     sys.path.insert(0, str(Path(args.autolabel)))
@@ -134,8 +135,8 @@ def main(argv=None) -> int:
 
     def add(fam: str, name: str, pred: List[Interval], refs: List[Interval], mask: List[Interval]) -> None:
         c = counts.setdefault((fam, name), [0, 0, 0, 0, 0])
-        c[0] += matches(pred, refs, [], snap_outer_edges)
-        c[1] += matches(pred, refs, mask, snap_outer_edges)
+        c[0] += matches(pred, refs, [], snap_outer_edges, args.threshold)
+        c[1] += matches(pred, refs, mask, snap_outer_edges, args.threshold)
         c[4] += sum(1 for a, b in pred for t in (a, b) if any(lo <= t <= hi for _, (lo, hi) in mask))
         c[2] += len(pred)
         c[3] += len(refs)
@@ -158,7 +159,8 @@ def main(argv=None) -> int:
             for key in args.keys if "segments" not in rec else ["segments"]:
                 if key in rec:
                     add(fam, f"{name} {key}", [(x["start_s"], x["end_s"]) for x in rec[key]], refs, mask)
-    lines = ["| Family | Method | F1@0.75 | F1@0.75, transitions forgiven | pred/ref | endpoints moved |",
+    th = f"{args.threshold:g}"
+    lines = [f"| Family | Method | F1@{th} | F1@{th}, transitions forgiven | pred/ref | endpoints moved |",
              "|---|---|---:|---:|---:|---:|"]
     for (fam, name), (tp, tp_forgiven, n_pred, n_ref, moved) in sorted(counts.items()):
         f1 = 2 * tp / (n_pred + n_ref)
