@@ -1333,9 +1333,34 @@ reference windows): Galaxea 0.772 (95/123), DROID 0.313 (47/150).
   videos) reports 61.0 % gold-window accuracy, 78.1 % label accuracy on
   temporal matches and a semantic F1 of 0.168-0.201.
 
+**FLORA as in its paper: with the episode instruction.** The runs above gave
+TempSeg and the Captioner no task text (FLORA's default with an empty
+instruction). FLORA's paper (Table 2, appendix B.5) gives every system the
+episode instruction in both stages; rerun that way (job rows with
+`instruction`, `caption_merge.py run --instruction`):
+
+| WGO (%) | Segmentation F1@0.75 | Gold-window accuracy | Semantic F1@0.75 |
+|---|---:|---:|---:|
+| DROID, FLORA paper | 56.1 | 55.3 | 32.5 |
+| DROID, our rerun with the instruction | 56.4 | 48.0 | 28.2 |
+| DROID, our run without it | 56.2 | 31.3 | 20.4 |
+| Galaxea, FLORA paper | 70.8 | 74.8 | 53.1 |
+| Galaxea, our rerun with the instruction | 71.8 | 82.9 | 59.5 |
+| Galaxea, our run without it | 68.7 | 77.2 | 57.9 |
+
+With the instruction our reproduction is close to the paper (segmentation
+within 1 point; captioning 7 points lower on DROID and 8 higher on Galaxea,
+plausibly judge and decoding differences on small subsets). The instruction
+matters for the Captioner on DROID (31 → 48 %), hardly for TempSeg.
+Against FLORA with the instruction, v6 stays far ahead on DROID (semantic
+F1@0.75 0.49-0.52 against 0.28; label accuracy on matches 0.84-0.87 against
+0.49) and behind on Galaxea (0.42-0.50 against 0.60; at tIoU 0.5 0.69-0.70
+against 0.72).
+
 Outputs: `outputs/kinseg/semantic/` (judge cache `judge_gemini35.jsonl`,
-`flora_vs_v6.md`, `gold_captioner.md`, the Captioner runs `captions_tempseg`
-and `captions_gold`).
+`flora_vs_v6.md`, `flora_instr_vs_v6.md`, `gold_captioner.md`,
+`gold_captioner_instr.md`, the Captioner runs `captions_tempseg[_instr]`,
+`captions_gold[_instr]`, TempSeg with the instruction `tempseg_instr`).
 
 ## 6. Results (all 75 episodes unless noted)
 
