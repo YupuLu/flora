@@ -66,9 +66,10 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
              │
              #15 all 75 episodes pooled (all75_v6)
                   per family: Galaxea C6 0.694, DROID C4 0.601 / 0.592   (TempSeg 0.687 / 0.562; #4 0.690 / 0.581)
-                  convention-free view (transition_eval.py): free movements at reference cuts forgiven
-                    v6 C1 0.776-0.792 / 0.642-0.645   against TempSeg 0.734 / 0.569
-                    → the remaining gap at 0.75 is mostly where free movements are attached
+                  convention-free view (transition_eval.py): free movement next to reference cuts forgiven
+                    regions capped at 1 s:  v6 C1 0.727-0.743 / 0.592-0.594   against TempSeg 0.734 / 0.569
+                    (whole touching phases: 0.776-0.792 / 0.642-0.645, too generous on DROID's long phases)
+                    → most of v6's Galaxea gap at 0.75 is where free movements are attached
 ```
 
 | Name | What it is | Defined in | Output folder (`outputs/kinseg/`) |
@@ -285,6 +286,8 @@ C6  0.0-2.5 | 2.5-6.0     C5's 2.0 → TempSeg cut 2.5
   transition region is moved onto that region's reference cut. A method then
   scores as if it had followed the reference's convention for free
   movements; the difference to the plain score is what the convention costs.
+  `--max-s 1.0` caps a region at 1 s on each side of its cut (recommended:
+  a DROID phase can last several seconds, and a whole phase forgives too much).
 
 ## 1. Goal
 
@@ -1230,6 +1233,45 @@ not monotonic in the region size.)
 - The forgiving is generous by design (up to one phase of free movement), and
   it favours cuts on our phase boundaries, which v6's are; the "+1 phase"
   column is an upper bound, not a recommended metric.
+
+**Is the forgiving reasonable? Checks and a correction** (2026-11-06).
+
+- *Sanity checks.* The references with every cut moved to the far end of its
+  region (a pure change of convention, grouping kept) score 0.618 (Galaxea)
+  and 0.707 (DROID) as scored, and 1.000 forgiven. The references with every
+  second cut removed (a grouping error) score 0.118 / 0.157 and stay there
+  when forgiven. So forgiving repairs only boundary placement, and a pure
+  convention change alone can cost 0.3-0.4 F1@0.75.
+- *Region sizes.* Galaxea: 78 regions, median 0.88 s (middle half 0.57-1.27 s,
+  longest 3.9 s). DROID: 99 regions, median 1.70 s (1.2-2.4 s, longest
+  13.8 s): DROID's phases are long, so a whole touching phase can forgive a cut
+  two seconds away. Examples (v6 run 1):
+
+  | Episode, reference cut | Region (touching phases) | v6 cut | TempSeg cut | Reading |
+  |---|---|---|---|---|
+  | Galaxea 013, pick-up → drop at 11.27 s | 10.77-11.97 s: "move the left hand back … while holding the soap dispenser bottle" (the lift after the grasp) | 10.77 (−0.50) forgiven | 11.25 (−0.02) | reasonable: the lift can go with either side |
+  | Galaxea 013, drop → next pick-up at 13.13 s | none: the gripper is still opening at the cut | 12.67 (−0.46) not forgiven | 13.50 (+0.37) | conservative |
+  | DROID 000013, pick-up → place at 8.12 s | 7.90-10.10 s, one 2.2 s phase (lift and start of the carry) | 10.10 (+1.98) forgiven; not with a 1 s cap | 8.50 (+0.38) | too generous |
+  | DROID 000050, pick-up → drop at 8.26 s | 7.20-9.70 s, one 2.5 s phase ("pick up … with the tongs") | 9.70 (+1.44) forgiven; not with a 1 s cap | 8.50 (+0.24) | too generous |
+
+- *Capped regions* (at most 1 s on each side of the cut; 16.0 % of Galaxea's
+  and 8.4 % of DROID's annotated time):
+
+  | F1@0.75, all 75 | Galaxea: as scored → forgiven, cap 1 s (cap 0.5 s) | DROID: as scored → forgiven, cap 1 s (cap 0.5 s) |
+  |---|---:|---:|
+  | TempSeg | 0.687 → 0.734 (0.718) | 0.562 → 0.569 (0.569) |
+  | TempSeg + gripper split | 0.690 → 0.736 (0.720) | 0.581 → 0.594 (0.594) |
+  | v6 C1, runs 1 / 2 | 0.539 / 0.580 → 0.727 / 0.743 (0.629 / 0.669) | 0.575 / 0.579 → 0.594 / 0.592 (0.581 / 0.586) |
+
+- *Correction.* With whole-phase regions, v6's own subtasks beat TempSeg on
+  both families; with regions capped at 1 s they tie with TempSeg on Galaxea
+  (0.727 / 0.743 against 0.734) and with TempSeg + gripper split on DROID
+  (0.594 / 0.592 against 0.594). What holds: attaching free movement explains
+  most of v6's Galaxea gap at F1@0.75 (0.54-0.58 → 0.73-0.74 within 1 s),
+  and v6's grouping is better than TempSeg's (F1@0.5). What does not hold:
+  the earlier DROID gain (0.645), which came from forgiving cuts 1.5-2 s away.
+  v6's cuts are further from the references than TempSeg's: median distance
+  0.46 s against 0.27 s on Galaxea, 0.90 s against 0.51 s on DROID.
 
 **Gripper verdicts, in short.** With instructions v1 and v6 the model returns,
 besides the subtasks, one verdict per gripper event of the log:

@@ -30,8 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 Interval = Tuple[float, float]
 
 
-def regions(case: Dict[str, object], neighbours: int = 0) -> List[Tuple[float, Interval]]:
-    """(reference cut, transition region) for the internal reference cuts of a kinematic prediction."""
+def regions(case: Dict[str, object], neighbours: int = 0, max_s: float = 0.0) -> List[Tuple[float, Interval]]:
+    """(reference cut, transition region) for the internal reference cuts of a kinematic prediction;
+    with ``max_s`` > 0 a region reaches at most that far from its cut on each side."""
     from merge import gripper_events
 
     phases = [(p["start_sec"], p["end_sec"]) for p in case["predictions"]]
@@ -52,6 +53,8 @@ def regions(case: Dict[str, object], neighbours: int = 0) -> List[Tuple[float, I
                 hi = min(hi, e0)
             else:  # the cut lies inside an event: no free movement there
                 lo, hi = c, c
+        if max_s > 0:
+            lo, hi = max(lo, c - max_s), min(hi, c + max_s)
         if hi > lo:
             out.append((c, (lo, hi)))
     return out
@@ -118,6 +121,7 @@ def main(argv=None) -> int:
     ap.add_argument("--keys", nargs="+", default=["C1", "C4"], help="segment lists to score in each file")
     ap.add_argument("--neighbours", type=int, default=0, help="phases beyond those touching a cut")
     ap.add_argument("--threshold", type=float, default=0.75, help="tIoU threshold of a match")
+    ap.add_argument("--max-s", type=float, default=0.0, help="cap a region at this distance from its cut (0: none)")
     ap.add_argument("--out")
     args = ap.parse_args(argv)
     sys.path.insert(0, str(Path(args.autolabel)))
@@ -145,7 +149,7 @@ def main(argv=None) -> int:
         case = kin[episode]
         fam = case["family"]
         refs = [(r["start_sec"], r["end_sec"]) for r in case["references"]]
-        mask = regions(case, args.neighbours)
+        mask = regions(case, args.neighbours, args.max_s)
         t = masked_time.setdefault(fam, [0.0, 0.0])
         t[0] += sum(hi - lo for _, (lo, hi) in merge_intervals_of(mask))
         t[1] += refs[-1][1] - refs[0][0]
