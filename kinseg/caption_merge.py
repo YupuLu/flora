@@ -335,13 +335,21 @@ def run(args) -> int:
             print(f"skip {episode}")
             continue
         case = json.loads(kin[episode].read_text())
-        tempseg = json.loads((Path(args.tempseg) / f"{episode}.json").read_text()) if args.cuts == "union" else None
+        tempseg = (json.loads((Path(args.tempseg) / f"{episode}.json").read_text())
+                   if args.cuts in ("union", "tempseg") else None)
         scene = (json.loads((Path(args.scenes) / f"{episode}.json").read_text())
                  if args.scenes and (Path(args.scenes) / f"{episode}.json").exists() else None)
         prompt_for = episode_prompt(args, case, scene, pipeline)
         videos, _ = engine._inputs(str(Path(args.videos) / f"{episode}.mp4"), PROFILES[args.profile], None, None,
                                    False, "")
-        intervals = initial_intervals(case, tempseg)
+        if args.cuts == "tempseg":  # TempSeg's own segments, as FLORA's pipeline captions them
+            intervals = [dict(start_s=s["start_s"], end_s=s["end_s"], members=[k])
+                         for k, s in enumerate(sorted(tempseg["segments"], key=lambda s: (s["start_s"], s["end_s"])))]
+        elif args.cuts == "references":  # the gold windows, for gold-window label accuracy
+            intervals = [dict(start_s=r["start_sec"], end_s=r["end_sec"], members=[k])
+                         for k, r in enumerate(case["references"])]
+        else:
+            intervals = initial_intervals(case, tempseg)
         for item in intervals:
             item["status"], item["caption"] = None, ""
         rounds, started = [], time.monotonic()
@@ -514,8 +522,10 @@ def main(argv=None) -> int:
     r.add_argument("--videos", required=True, help="folder of <episode>.mp4")
     r.add_argument("--episodes", nargs="+", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--cuts", choices=("ours", "union"), default="ours")
-    r.add_argument("--tempseg", help="segment.py output dir, for --cuts union")
+    r.add_argument("--cuts", choices=("ours", "union", "tempseg", "references"), default="ours",
+                   help="intervals to caption: our phases, tiles of ours and TempSeg's cuts, TempSeg's segments, "
+                        "or the reference windows")
+    r.add_argument("--tempseg", help="segment.py output dir, for --cuts union and tempseg")
     r.add_argument("--profile", default="yam")
     r.add_argument("--instruction", action="store_true",
                    help="FLORA's plain episode instruction: the task sentence alone (overrides --background)")
@@ -548,8 +558,8 @@ def main(argv=None) -> int:
     c.add_argument("--tempseg", help="segment.py output dir: also score TempSeg split by operation")
     c.add_argument("--out", help="write the table here")
     args = ap.parse_args(argv)
-    if args.command == "run" and args.cuts == "union" and not args.tempseg:
-        ap.error("--cuts union needs --tempseg")
+    if args.command == "run" and args.cuts in ("union", "tempseg") and not args.tempseg:
+        ap.error(f"--cuts {args.cuts} needs --tempseg")
     if args.command == "run" and args.prompt == "field" and (args.brief or args.objects or args.kinematics or args.notes):
         ap.error("--brief, --objects, --kinematics and --notes need --prompt template")
     if args.command == "run" and args.prompt == "template" and (args.instruction or args.background != "none"
