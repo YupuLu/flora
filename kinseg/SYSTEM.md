@@ -1,12 +1,89 @@
 # Kinematic segmentation with FLORA: system overview
 
-Status 2026-11-04, branch `kinseg-merge`. This document records the technical
-route of combining autolabel's kinematic segmentation with FLORA: the parts
-(section 2), the route taken, with each direction's hypothesis, evidence and
-conclusion (section 3), how each method works (section 4), the Captioner
-pipeline as it works now, with its design and a comparison of prompt variants
-(section 5), the results (section 6), and the decisions ahead (section 8).
-Measurements and commands are in [README.md](README.md).
+Status 2026-11-06, branch `kinseg-merge`. This document records the technical
+route of combining autolabel's kinematic segmentation with FLORA: a map of how
+the methods evolved and what their names mean (below), the parts (section 2),
+the route taken, with each direction's hypothesis, evidence and conclusion
+(section 3), how each method works (section 4), the Captioner pipeline and the
+combination by a language model (section 5), the results (section 6), and the
+decisions ahead (section 8). Measurements and commands are in
+[README.md](README.md).
+
+## Evolution map: how the methods and their names connect
+
+Every method so far, in the order it was built, with what it fed into. Each
+node gives its name as used in the code and outputs, the episodes it was
+measured on, and its F1@0.75 (Galaxea / DROID). TempSeg alone is 0.687 /
+0.562 on all 75 episodes.
+
+```text
+kinematic phases + gripper events (autolabel)          video ──► Flora-TempSeg (#0, 0.687 / 0.562)
+        │                                                              │
+        ├─ Direction 1: TempSeg decides, our phases refine (§3.2, merge.py, segment.py, beliefs.py)
+        │    #2 group phases by TempSeg segment ............................ 0.593 / 0.560
+        │    #3 snap TempSeg cuts to our cuts .............................. 0.571 / 0.556
+        │    #4 TempSeg + gripper split (close → open inside a segment) .... 0.690 / 0.581   (best until 11-05)
+        │    #5 TempSeg forced onto our cut ticks (constrained decoding) ... 0.498 / 0.317
+        │    #6 TempSeg's grid probabilities as a judge of our cuts ........ 0.416 / 0.356
+        │
+        └─ Direction 2: our phases first, a model judges the joins (§3.3)
+             #7 Qwen3.5-9B "same operation?" per cut (judge.py) ............ AUC ~0.5, chance
+             │
+             #8-#10 Flora-Captioner writes one caption per phase (caption_merge.py), all 75 episodes
+             │    captions:  A = FLORA's default inputs     plain = + the bare task sentence
+             │    joins:     exact join 0.029 / 0.000 → operation join 0.303 / 0.120
+             │               → TempSeg split by operation 0.320 / 0.128
+             │               → motion-absorbed join (autolabel v3's low-importance rule, later)
+             │
+             #11 Captioner inputs, text in FLORA's episode-instruction field (§5.1-5.5; 26 episodes, 11-04)
+             │    A_none   no text, TARGET only           B_both   task brief, all blocks
+             │    B_none   task brief, TARGET only        B_prev   + previous caption, TARGET + AFTER
+             │    B_robot  + robot state                  B_robot_prev  + both
+             │    → best joins 0.362 / 0.306: inputs shift agreement inside and across subtasks together
+             │
+             #12 our prompt template, text in the prompt itself (§5.6, caption_prompt.py; 26 episodes, 11-05)
+             │    T1 brief → T2 + notes → T3 + objects → T4 + previous → T5 + kinematics
+             │    → T4 separates subtasks best; T4's captions feed everything below
+             │
+             #13-#14 a language model combines T4's captions from a status log (§5.7, combine.py; 26 episodes)
+             │    models:       sol = GPT-6.1-sol (kept)   luna = GPT-6-luna   haiku = Claude Haiku
+             │    instructions (prompts/combine/<version>.txt):
+             │      v1  our WGO-derived conventions + gripper verdicts (#13) .. C1 0.356 / 0.574
+             │      v2  no conventions, subtasks only ........................ C1 0.277 / 0.505
+             │      v3  v2 + FLORA-TempSeg's granularity sentence ............ C1 0.331 / 0.556
+             │      v5  v2 + "keep basic manipulation actions separate" ...... C1 0.345 / 0.547
+             │      v6  v1 + v5 in general terms (kept, #14) ................. C1 0.511-0.526 / 0.578-0.622
+             │          variants: v6-movement, v6-grouping, v6-previous, v6-noverdict, v6-boundary (ablations)
+             │    post-processing of an answer (combine.py score):
+             │      C1 model's subtasks            C2 C1 split at confirmed grasp → release
+             │      C3 TempSeg split at confirmed grasp → release (#4 with verdicts)
+             │      C4 C1 snapped to TempSeg cuts  C5 C1 anchored at confirmed grasps   C6 C5 snapped
+             │    → v6 + C6 on Galaxea 0.677, v6 + C4 on DROID 0.600 / 0.644
+             │
+             held-out check: v6 frozen, 49 other episodes (heldout_v6, 11-05)
+             │    Galaxea C6 0.714 (TempSeg 0.700)   DROID C4 0.601 / 0.571, C3 0.605 (TempSeg 0.576)
+             │
+             #15 all 75 episodes pooled (all75_v6)
+                  per family: Galaxea C6 0.694, DROID C4 0.601 / 0.592   (TempSeg 0.687 / 0.562; #4 0.690 / 0.581)
+                  convention-free view (transition_eval.py): free movements at reference cuts forgiven
+                    v6 C1 0.776-0.792 / 0.642-0.645   against TempSeg 0.734 / 0.569
+                    → the remaining gap at 0.75 is mostly where free movements are attached
+```
+
+| Name | What it is | Defined in | Output folder (`outputs/kinseg/`) |
+|---|---|---|---|
+| phases, our cuts | autolabel's activity phases and their boundaries | §4.1 | autolabel `outputs/exp_wgo_bench/…_kinseg-base` |
+| #0-#15 | the approaches in order, as in the results table | §6 | |
+| A, plain | Captioner on every phase with FLORA's default inputs, and with the bare task sentence | §3.3, `caption_merge.py` | `caption_merge/all_ours`, `all_ours_instr` |
+| A_none … B_robot_prev | Captioner input variants, text in the episode-instruction field | §5.3 | `caption_merge/v2/<name>` |
+| T1-T5 | Captioner runs with our prompt template, one item added per run | §5.6, `caption_prompt.py` | `caption_merge/v3/T<n>` (T4: all 75) |
+| operation join, motion absorbed | joining captions by leading verb; also absorbing motion-only captions | §5.1, `caption_merge.py` | |
+| v1-v6, v6-* | instructions for the combining model | §5.7, `prompts/combine/` | `combine/T4` (v1), `T4_v2` … `T4_v6-boundary` |
+| sol, luna, haiku | the combining models | §5.7 | `combine/*/answers/<model>` |
+| C1-C6 | post-processing of a combination answer | §5.7, `combine.py` | `combine/*/segments`, `score.md` |
+| gripper verdicts, confirmed events | the model's grasp / release / none per gripper event; a grasp or release judged so | §5.7 | |
+| heldout_v6, all75_v6 | v6 on the 49 held-out episodes, and all 75 pooled | §5.7 | `combine/heldout_v6`, `combine/all75_v6` |
+| transition region, forgiven | free movement next to a reference cut; scoring that accepts a cut anywhere in it | §5.7, `transition_eval.py` | `combine/all75_v6/transition_eval_*.md` |
 
 ## 1. Goal
 
