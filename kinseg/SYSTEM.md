@@ -79,6 +79,7 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
              channels: codex-gpt-1 best; codex-gpt-2, azure-gpt-2 (sol, luna) behind (§5.8)
              cut candidates: perfect grouping on our nearest phase boundary 0.854 / 0.940,
                  a fixed side 0.58-0.67 on Galaxea (§5.9)
+             the boundary convention, all tests with F1@0.75 and F1@0.5 (§5.10)
 ```
 
 | Name | What it is | Defined in | Output folder (`outputs/kinseg/`) |
@@ -1104,7 +1105,8 @@ The grouping clause restates v1's second rule; the gripper verdicts return.
 Example pages: `outputs/kinseg/combine/v6_examples.md` (v6 runs 1 and 2, v6
 without the movement line, v1, v5, per episode).
 
-**Annotation conventions: is moving away part of the next action?** Where
+**Annotation conventions: is moving away part of the next action?** (All
+convention tests, with F1@0.5, are collected in §5.10.) Where
 reference cuts sit after the last gripper event (within 3 s), measured on the
 references themselves:
 
@@ -1208,7 +1210,8 @@ And all 75 episodes pooled (26 tuning + 49 held-out):
 Files: `outputs/kinseg/combine/heldout_v6/` (prompts, answers, `score.md`,
 `combination_examples.md`), `outputs/kinseg/combine/all75_v6/score.md`.
 
-**How much of the error is convention?** (`transition_eval.py`, 2026-11-05).
+**How much of the error is convention?** (`transition_eval.py`, 2026-11-05;
+collected with the other convention tests in §5.10).
 A movement between two actions (moving away after a release, reaching,
 lifting after a grasp) can go with the previous or the next subtask without
 being wrong, and the per-dataset fixes above (attachment, grasp anchors) only
@@ -1308,6 +1311,8 @@ the grasp's phase. In practice sol confirms almost every event (Galaxea 102 of
 held-out DROID that makes C3 the best DROID result (0.605 against 0.579).
 
 ### 5.8 Transitions marked by the model, attached by setting (v7, 2026-11-06)
+
+(Its results are also collected, with F1@0.5, in §5.10.)
 
 To keep the pipeline independent of TempSeg and of one dataset's
 convention, v7 (`prompts/combine/v7.txt`) is v6 plus one request: list every
@@ -1426,6 +1431,8 @@ azure-gpt-2 group is 0.1 against 0.037 for codex-gpt-1.
 
 ### 5.9 Where the reference cuts lie in our phases (2026-11-06)
 
+(Part of the convention tests collected in §5.10.)
+
 A method that combines our phases can only cut on our phase boundaries. For
 every internal reference cut of all 75 episodes, `kinseg/cut_ceiling.py` finds
 the phase boundary just before and just after it, and scores perfect
@@ -1491,6 +1498,84 @@ Galaxea 009 fails on both sides (the place is 1.8 s long and the cut sits
 0.73 s and 0.93 s from the two boundaries); Galaxea 011 matches only with the
 boundary before; DROID 000013's 2.2 s phase leaves the boundary after 1.98 s
 away.
+
+### 5.10 The boundary convention: all tests together (2026-11-06)
+
+*Convention* here means where free movement between two actions is put:
+lifting an object just grasped, carrying it, moving the hand away after a
+release, reaching for the next object. Annotators choose; F1@0.75 is
+sensitive to the choice, F1@0.5 much less. The tests of §5.7-5.9, with both
+scores. Values for two runs are "run 1 / run 2".
+
+**1. Do datasets differ?** Where reference cuts sit after the last gripper
+event (within 3 s), measured on the references:
+
+| References | Cut after a release | Cut after a grasp |
+|---|---|---|
+| WGO Galaxea (25 episodes) | median 0.04 s; 16 of 18 within 0.5 s | median 0.44 s |
+| WGO DROID (50) | median 0.52 s (middle half 0.30-1.08 s) | median 1.70 s (command events) |
+| Galaxea Open-World (415) | median −0.07 s; 97 of 134 within 0.5 s | median 1.33 s |
+| B1K skills (500) | median 1.47 s (middle half 0.87-2.17 s) | median 2.00 s |
+
+Galaxea (WGO and Open-World) ends a place at the release, so moving away
+goes to the next subtask; B1K keeps it with the previous skill.
+
+**2. What a convention alone costs.** Perfect grouping, every reference cut
+moved onto one of our phase boundaries (all 75 episodes, `cut_ceiling.py`),
+and the references with every cut moved to the far end of its transition
+region (`transition_eval.py` regions of the touching phases):
+
+| Perfect grouping, cuts moved … | Galaxea F1@0.75 (F1@0.5) | DROID F1@0.75 (F1@0.5) |
+|---|---:|---:|
+| to the nearest phase boundary | 0.854 (0.984) | 0.940 (1.000) |
+| to the boundary before each cut | 0.667 (0.967) | 0.847 (0.947) |
+| to the boundary after each cut | 0.577 (0.919) | 0.800 (0.960) |
+| to the far end of each transition region | 0.618 | 0.707 |
+
+A fixed side, which is what any convention is, costs 0.19-0.28 F1@0.75 on
+Galaxea against the nearest boundary, and almost nothing at F1@0.5.
+
+**3. How much of our error is convention.** All 75 episodes; "forgiven"
+moves a predicted endpoint inside a transition region (the free movement in
+the phases touching a reference cut, never across a gripper event) onto the
+reference cut. Capped at 1 s on each side is the recommended form:
+
+| | Galaxea F1@0.75: plain → forgiven, cap 1 s (whole phases) | Galaxea F1@0.5: plain → forgiven, cap 1 s (whole phases) | DROID F1@0.75 | DROID F1@0.5 |
+|---|---:|---:|---:|---:|
+| TempSeg | 0.687 → 0.734 (0.734) | 0.857 → 0.865 (0.865) | 0.562 → 0.569 (0.569) | 0.752 → 0.752 (0.752) |
+| TempSeg + gripper split | 0.690 → 0.736 (0.736) | 0.866 → 0.874 (0.874) | 0.581 → 0.594 (0.607) | 0.767 → 0.792 (0.799) |
+| v6 C1, model's subtasks | 0.539 / 0.580 → 0.727 / 0.743 (0.776 / 0.792) | 0.939 → 0.988 (0.988) | 0.575 / 0.579 → 0.594 / 0.592 (0.645 / 0.642) | 0.824 / 0.816 → 0.831 / 0.835 (0.837 / 0.841) |
+
+Within 1 s the convention explains most of v6's Galaxea gap at F1@0.75 (it
+then ties TempSeg); at F1@0.5 v6 leads TempSeg with or without forgiving.
+Whole-phase regions over-forgive on DROID, whose phases run up to 13.8 s.
+
+**4. Switching the convention: tested ways** (26 tuning episodes, sol):
+
+| Switch | How | Galaxea F1@0.75 (F1@0.5) | DROID F1@0.75 (F1@0.5) |
+|---|---|---:|---:|
+| TempSeg / + gripper split | — | 0.676 / 0.681 (0.835 / 0.851) | 0.530 / 0.587 (0.747 / 0.804) |
+| v6: movement goes to the next action | prompt line | 0.511 / 0.526 (0.917 / 0.917) | 0.578 / 0.622 (0.778 / 0.844) |
+| v6-previous: moving away to the previous action | prompt line | 0.421 (0.857) | 0.556 (0.733) |
+| v6-free: "free movement … belongs to the next action" | prompt line, group name | 0.522 / 0.482 (0.896 / 0.876) | 0.607 / 0.607 (0.831 / 0.787) |
+| v6-lift: "lifting" added to v6's list | prompt line | 0.481 / 0.511 (0.842 / 0.902) | 0.556 / 0.607 (0.822 / 0.787) |
+| v6 + C5: a confirmed grasp ends the pick-up | code | 0.571 / 0.571 (0.887 / 0.887) | 0.578 / 0.622 (0.778 / 0.844) |
+| v7 C1: transitions labelled, not moved | — | 0.511 / 0.456 (0.902 / 0.868) | 0.562 / 0.562 (0.787 / 0.764) |
+| v7 C7: lift → next, retreat → next | code | 0.571 / 0.529 (0.902 / 0.868) | 0.607 / 0.607 (0.787 / 0.742) |
+| v7 C7: lift → previous, retreat → next | code | 0.511 / 0.485 (0.902 / 0.897) | 0.562 / 0.539 (0.809 / 0.764) |
+| v7 C7: lift → next, retreat → previous | code | 0.511 / 0.500 (0.857 / 0.838) | 0.562 / 0.562 (0.764 / 0.719) |
+| v7 C7: lift → previous, retreat → previous | code | 0.406 / 0.412 (0.872 / 0.882) | 0.517 / 0.517 (0.809 / 0.764) |
+
+- The switch matching WGO's convention (next) is the best of each kind; the
+  wrong ones lose up to 0.1 on Galaxea at F1@0.75 (both previous: 0.41).
+- F1@0.5 moves much less (Galaxea 0.84-0.92 across all switches) and does not
+  rank them the same way: it measures the grouping, which the switches leave
+  mostly unchanged.
+- No switch closes Galaxea's gap to TempSeg at F1@0.75 without TempSeg's cuts
+  (best 0.571 against 0.676): the rest is where our phase boundaries lie
+  (§5.9), not which side a phase goes to. A prompt switch also changes about
+  half of the answers (v6's own two runs agree in 24 of 26 episodes, v6 and
+  v6-free in 13-15, v6 and v7 in 13-17).
 
 ## 6. Results (all 75 episodes unless noted)
 
