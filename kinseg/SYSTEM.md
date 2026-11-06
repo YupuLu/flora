@@ -1398,6 +1398,50 @@ as with the other rewordings (identical to v6's subtasks in 13-17 of 26
 episodes; v6-lift's own runs agree in 18). The word is not followed; the
 group-name line (v6-free) is.
 
+**v6 through other channels** (autolabel's providers; 26 episodes, two runs):
+
+| Channel (model) | Galaxea C1 / C5 | DROID C1 / C5 | runs identical | same as codex-gpt-1 | s per call |
+|---|---:|---:|---:|---:|---:|
+| openlux-codex-gpt-1 (gpt-6.1-sol, reasoning medium; used so far) | 0.511, 0.526 / 0.571, 0.571 | 0.578, 0.622 / 0.578, 0.622 | 24 of 26 | 26 of 26 | 6.6 |
+| openlux-codex-gpt-2 (gpt-6.1-sol, no reasoning setting) | 0.511, 0.466 / 0.571, 0.526 | 0.578, 0.609 / 0.600, 0.587 | 19 | 18 | 8.6 |
+| openlux-azure-gpt-2 (gpt-6-luna:stable, reasoning medium) | 0.306, 0.276 / 0.347, 0.303 | 0.452, 0.381 / 0.476, 0.405 | 14 | 13 | 11.6 |
+
+codex-gpt-1 is the best and by far the most repeatable channel for v6; the
+same model without a reasoning setting (codex-gpt-2) is close but less
+stable, and luna stays far behind, as with v1 and v2.
+
+**Where the reference cuts lie in our phases.** For every internal
+reference cut of all 75 episodes, the phase boundaries just before and after
+it, and what placing every cut on one of them costs when the grouping is
+perfect (`outputs/kinseg/combine/`, analysis script in the job notes):
+
+| | Galaxea (98 cuts) | DROID (100 cuts) |
+|---|---:|---:|
+| phase around a reference cut, median length | 0.93 s | 1.75 s |
+| distance to the nearest phase boundary, median | 0.29 s | 0.33 s |
+| … within 0.25 s / within 0.5 s / over 1 s | 40 / 80 / 0 | 37 / 69 / 6 |
+| perfect grouping, every cut on the nearest boundary: F1@0.75 (F1@0.5) | 0.854 (0.984) | 0.940 (1.000) |
+| perfect grouping, every cut on the boundary before it | 0.667 (0.967) | 0.847 (0.947) |
+| perfect grouping, every cut on the boundary after it | 0.577 (0.919) | 0.800 (0.960) |
+
+The reference cut usually lies inside a phase, and which boundary is nearer
+changes from cut to cut. Our candidates allow 0.854 on Galaxea if the nearer
+boundary is chosen every time, but any fixed side, as a convention gives,
+caps Galaxea at 0.58-0.67 even with perfect grouping; v6 is at 0.51-0.57.
+Short subtasks fail whichever boundary is chosen. Galaxea 009, "place the
+blue cloth into the left basket" (24.59-26.43 s) | "pick up yellow lemon from
+the table" (26.43-29.09 s): the cut lies in phase 27, 25.70-27.37 s ("move
+the left hand back"), 0.73 s after its start and 0.93 s before its end. At
+25.70 the first subtask's tIoU is 0.60; at 27.37 they are 0.66 and 0.65; both
+miss 0.75. In Galaxea 011, "pick up the blue cup" | "drop the blue cup into
+the left brown basket" at 11.64 s, inside 11.17-12.07 s, the boundary before
+gives 0.80 / 0.77 (both match) and the one after 0.85 / 0.73 (the drop
+misses). In DROID 000013 the cut at 8.12 s lies 0.22 s after the start of a
+2.2 s phase: the boundary before gives 0.97 / 0.97, the one after 0.80 /
+0.74. The log tells the model nothing about where inside a phase an
+annotator would cut, so finer candidates (gripper events' ends, speed minima
+inside long phases) are what would narrow the distance.
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
