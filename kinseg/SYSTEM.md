@@ -906,6 +906,58 @@ And all 75 episodes pooled (26 tuning + 49 held-out):
 Files: `outputs/kinseg/combine/heldout_v6/` (prompts, answers, `score.md`,
 `combination_examples.md`), `outputs/kinseg/combine/all75_v6/score.md`.
 
+**How much of the error is convention?** (`transition_eval.py`, 2026-11-05).
+A movement between two actions (moving away after a release, reaching,
+lifting after a grasp) can go with the previous or the next subtask without
+being wrong, and the per-dataset fixes above (attachment, grasp anchors) only
+pick WGO's choice. To measure the effect instead of tuning for it, every
+internal reference cut gets a *transition region*: the phases touching the
+cut (optionally one more on each side), cut back at the nearest gripper event
+so that a region never contains a grasp or a release. A predicted endpoint
+inside a region is moved onto the reference cut before the usual WGO scoring.
+Over all 75 episodes:
+
+| F1@0.75 (all 75) | Galaxea: as scored / transitions forgiven (touching phases; +1 phase) | DROID: as scored / forgiven (touching; +1) |
+|---|---:|---:|
+| TempSeg | 0.687 / 0.734; 0.772 | 0.562 / 0.569; 0.584 |
+| TempSeg + gripper split | 0.690 / 0.736; 0.774 | 0.581 / 0.607; 0.620 |
+| v6 C1 (model's subtasks), runs 1 / 2 | 0.539 / 0.580 → **0.776 / 0.792**; 0.784 / 0.792 | 0.575 / 0.579 → **0.645 / 0.642**; 0.716 / 0.692 |
+| v6 C4 (snapped) | 0.661 / 0.669 → 0.767 / 0.776; 0.824 | 0.601 / 0.592 → 0.652 / 0.636; 0.716 / 0.692 |
+| v6 C6 (grasp anchors + snapped) | 0.694 → 0.776 / 0.784; 0.816 | 0.569 / 0.561 → 0.607 / 0.592; 0.677 / 0.654 |
+
+The touching phases cover 17.5 % (Galaxea) and 13.3 % (DROID) of the
+annotated time; with one more phase on each side, 42.3 % and 28.4 %.
+
+- **The convention costs v6 0.21-0.24 on Galaxea and 0.06-0.07 on DROID**, TempSeg
+  0.05 and 0.01. Forgiving only the movement in the phases touching each cut,
+  the model's own subtasks, without any post-processing, beat TempSeg on both
+  families (0.776 / 0.792 against 0.734; 0.645 / 0.642 against 0.569).
+- **The per-dataset fixes become unnecessary.** Once the convention is
+  forgiven, grasp anchors and snapping add little or lose (C6 0.776 / 0.784,
+  C4 0.767 / 0.776 against C1 0.776 / 0.792 on Galaxea); they mostly encoded
+  WGO's choice. This supports keeping the pipeline convention-free: output
+  subtasks plus their transition movements (which can be attached either
+  way), and attach them per dataset only when a benchmark requires it.
+- **TempSeg gains little** because its errors are mostly grouping (merged
+  subtasks on DROID), not attachment; it was also trained on annotations that
+  follow a similar convention.
+- The forgiving is generous by design (up to one phase of free movement), and
+  it favours cuts on our phase boundaries, which v6's are; the "+1 phase"
+  column is an upper bound, not a recommended metric.
+
+**Gripper verdicts, in short.** With instructions v1 and v6 the model returns,
+besides the subtasks, one verdict per gripper event of the log:
+`{"phase": 3, "hand": "right", "event": "close", "is": "grasp"}`, where "is"
+is grasp, release or none. A close judged "grasp" or an open judged "release"
+is *confirmed*. Confirmed events are used in three post-processing steps of
+`combine.py score`: C2 splits a model subtask that holds a confirmed grasp and
+a later confirmed release of the same hand; C3 does the same split on TempSeg's
+segments (the gripper split of `merge.py`, restricted to confirmed events); C5
+moves a model cut lying within one phase of a confirmed grasp to the end of
+the grasp's phase. In practice sol confirms almost every event (Galaxea 102 of
+102; DROID 142 of 156), so the verdicts matter only where they reject one: on
+held-out DROID that makes C3 the best DROID result (0.605 against 0.579).
+
 ## 6. Results (all 75 episodes unless noted)
 
 | # | Approach | Galaxea F1 | DROID F1 | Why it fell short |
@@ -1034,7 +1086,9 @@ are available; choosing them is the problem.
 | `caption_merge.py` | Captioner on our phases (video context, background, robot state, previous caption); join rules; `compare` |
 | `background.py` | the Captioner's background text, after the workspace template |
 | `caption_prompt.py` | our Captioner prompt template (information and notes before FLORA's instruction) |
-| `combine.py` | a language model combines captioned phases from a status log; scores C1-C4 |
+| `combine.py` | a language model combines captioned phases from a status log; scores C1-C6 |
+| `prompts/combine/<version>.txt` | the combination instructions, one file per version (`prompts --version` / `--instruction`) |
+| `transition_eval.py` | WGO scoring with free movements next to reference cuts forgiven (convention-free view) |
 | `caption_examples.py` | markdown pages: each run's captions per phase and each method's segments per episode |
 | `local_models.py` | local weight folders, warming, one load at a time, the load retry |
 | `remote/flora-remote` | remote server control |

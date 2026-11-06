@@ -353,13 +353,14 @@ def score(args) -> int:
             c3 = split_at_grasps(tempseg, confirmed, cuts)
             c4 = snap(c1, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
             row.setdefault("C1 model's subtasks", []).append(case_of(c1, refs))
+            c5 = c6 = None
             if asks_gripper(item):
                 row.setdefault("C2 C1 + confirmed gripper split", []).append(case_of(c2, refs))
                 row.setdefault("C3 TempSeg + confirmed gripper split", []).append(case_of(c3, refs))
                 c5 = anchored(ranges, phases, confirmed) if ranges else c1
+                c6 = snap(c5, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S)
                 row.setdefault("C5 C1, cuts anchored at confirmed grasps", []).append(case_of(c5, refs))
-                row.setdefault(f"C6 C5 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(
-                    snap(c5, sorted(set(boundaries(tempseg) + [tempseg[0][0], tempseg[-1][1]])), SNAP_S), refs))
+                row.setdefault(f"C6 C5 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c6, refs))
             row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
                               events=len(gripper_events(case)),
@@ -373,6 +374,8 @@ def score(args) -> int:
                     id=episode, C1=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c1, labels)],
                     C2=[dict(start_s=a, end_s=b) for a, b in c2], C3=[dict(start_s=a, end_s=b) for a, b in c3],
                     C4=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c4, labels)],
+                    **({} if c5 is None else dict(C5=[dict(start_s=a, end_s=b) for a, b in c5],
+                                                  C6=[dict(start_s=a, end_s=b) for a, b in c6])),
                     confirmed=[dict(arm=e[0], kind=e[1], start_sec=e[2]) for e in confirmed],
                     gripper=(answer or {}).get("gripper"), repairs=repairs), indent=1) + "\n")
     lines = ["| Source | Family | Method | F1@0.75 | F1@0.5 | pred/ref | Answers / repaired / events confirmed |",

@@ -312,6 +312,23 @@ def test_anchored_cuts():
     assert anchored([(0, 2, ""), (3, 5, "")], phases, [("RIGHT", "open", 1.5, 1.7)]) == [(0.0, 3.0), (3.0, 6.0)]
 
 
+def test_transition_regions_and_forgiving():
+    from transition_eval import forgive, regions
+
+    case = {"references": [dict(start_sec=0.0, end_sec=4.2), dict(start_sec=4.2, end_sec=8.0)],
+            "predictions": [dict(start_sec=0.0, end_sec=3.0, arm="RIGHT", gripper_events=[
+                                dict(arm="RIGHT", kind="open", start_sec=2.5, end_sec=2.8)]),
+                            dict(start_sec=3.0, end_sec=5.0, arm="RIGHT", gripper_events=[]),
+                            dict(start_sec=5.0, end_sec=8.0, arm="RIGHT", gripper_events=[
+                                dict(arm="RIGHT", kind="close", start_sec=6.0, end_sec=6.2)])]}
+    # The cut at 4.2 s lies in phase 3.0-5.0, which has no gripper event; with one neighbour each side the
+    # region still stops at the open (2.8 s) and the close (6.0 s).
+    assert regions(case) == [(4.2, (3.0, 5.0))]
+    assert regions(case, neighbours=1) == [(4.2, (2.8, 6.0))]
+    assert forgive([(0.0, 3.0), (3.0, 8.0)], regions(case)) == [(0.0, 4.2), (4.2, 8.0)]
+    assert forgive([(0.0, 5.5), (5.5, 8.0)], regions(case)) == [(0.0, 5.5), (5.5, 8.0)]  # outside: unchanged
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 
