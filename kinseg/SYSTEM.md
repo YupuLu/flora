@@ -1312,6 +1312,67 @@ nearest each reference cut within 0.5 s gives 0.728 / 0.729 with our cuts,
 0.741 / 0.374 with TempSeg's, and **0.917 / 0.850 with both**. The boundaries
 are available; choosing them is the problem.
 
+### 6.1 F1@0.75 and F1@0.5 for the combination (2026-11-06)
+
+F1@0.5 accepts a segment that overlaps its reference subtask by half (D2), so
+a cut can be off by roughly a third of the subtask without cost. It therefore
+mostly measures grouping, and it hides the attachment convention (§5.7) along
+with genuine boundary errors; F1@0.75 measures both grouping and boundaries.
+All values below are from `combine.py score` (`outputs/kinseg/combine/*/score*.md`).
+
+**26 tuning episodes**, F1@0.75 / F1@0.5 (C6 needs gripper verdicts, so v3, v5 and v6-noverdict have none):
+
+| Run | Galaxea C1 | Galaxea C4 | Galaxea C6 | DROID C1 | DROID C4 | DROID C6 |
+|---|---:|---:|---:|---:|---:|---:|
+| TempSeg | 0.676 / 0.835 | | | 0.530 / 0.747 | | |
+| TempSeg + gripper split | 0.681 / 0.851 | | | 0.587 / 0.804 | | |
+| v1 run 1 | 0.356 / 0.795 | 0.521 / 0.808 | 0.562 / 0.808 | 0.574 / 0.702 | 0.596 / 0.702 | 0.553 / 0.702 |
+| v1 run 2 | 0.372 / 0.772 | 0.538 / 0.814 | 0.566 / 0.814 | 0.630 / 0.739 | 0.652 / 0.739 | 0.609 / 0.739 |
+| v3 | 0.331 / 0.759 | 0.510 / 0.828 | – | 0.556 / 0.756 | 0.556 / 0.756 | – |
+| v5 run 1 | 0.345 / 0.745 | 0.538 / 0.841 | – | 0.547 / 0.716 | 0.505 / 0.716 | – |
+| v5 run 2 | 0.315 / 0.740 | 0.493 / 0.808 | – | 0.526 / 0.632 | 0.505 / 0.632 | – |
+| v6 run 1 | 0.511 / 0.917 | 0.632 / 0.917 | 0.677 / 0.917 | 0.578 / 0.778 | 0.600 / 0.778 | 0.600 / 0.778 |
+| v6 run 2 | 0.526 / 0.917 | 0.647 / 0.917 | 0.677 / 0.917 | 0.622 / 0.844 | 0.644 / 0.844 | 0.644 / 0.844 |
+| v6 without movement line | 0.373 / 0.760 | 0.520 / 0.813 | 0.480 / 0.773 | 0.531 / 0.735 | 0.551 / 0.755 | 0.551 / 0.755 |
+| v6 without grouping clause | 0.522 / 0.910 | 0.627 / 0.910 | 0.657 / 0.910 | 0.600 / 0.778 | 0.622 / 0.778 | 0.622 / 0.778 |
+| v6, moving away to the previous action | 0.421 / 0.857 | 0.571 / 0.917 | 0.496 / 0.782 | 0.556 / 0.733 | 0.578 / 0.733 | 0.556 / 0.689 |
+| v6 without verdicts | 0.478 / 0.896 | 0.597 / 0.910 | – | 0.667 / 0.800 | 0.622 / 0.844 | – |
+| v6 with boundary verdicts | 0.541 / 0.887 | 0.647 / 0.902 | 0.647 / 0.902 | 0.533 / 0.733 | 0.556 / 0.756 | 0.556 / 0.756 |
+
+**49 held-out episodes**, F1@0.75 / F1@0.5:
+
+| Method | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg | 0.700 / 0.883 | 0.576 / 0.754 |
+| TempSeg + gripper split (all events) | 0.700 / 0.883 | 0.579 / 0.751 |
+| captions, motion absorbed | 0.329 / 0.586 | 0.296 / 0.547 |
+| v6 C1 model's subtasks, runs 1 ; 2 | 0.571 / 0.964 ; 0.643 / 0.964 | 0.574 / 0.843 ; 0.563 / 0.805 |
+| C3 TempSeg split at confirmed events, runs 1 ; 2 | 0.700 / 0.883 ; 0.700 / 0.883 | 0.605 / 0.763 ; 0.605 / 0.763 |
+| v6 C4 snapped, runs 1 ; 2 | 0.696 / 0.964 ; 0.696 / 0.964 | 0.601 / 0.834 ; 0.571 / 0.788 |
+| v6 C5 grasp anchors, runs 1 ; 2 | 0.625 / 0.982 ; 0.679 / 0.982 | 0.538 / 0.816 ; 0.528 / 0.771 |
+| v6 C6 anchors + snapped, runs 1 ; 2 | 0.714 / 0.964 ; 0.714 / 0.964 | 0.556 / 0.816 ; 0.528 / 0.762 |
+
+**All 75 episodes**, F1@0.75 / F1@0.5:
+
+| Method | Galaxea | DROID |
+|---|---:|---:|
+| TempSeg | 0.687 / 0.857 | 0.562 / 0.752 |
+| TempSeg + gripper split (all events) | 0.690 / 0.866 | 0.581 / 0.767 |
+| captions, motion absorbed | 0.328 / 0.609 | 0.297 / 0.554 |
+| v6 C1 model's subtasks, runs 1 ; 2 | 0.539 / 0.939 ; 0.580 / 0.939 | 0.575 / 0.824 ; 0.579 / 0.816 |
+| C3 TempSeg split at confirmed events, runs 1 ; 2 | 0.690 / 0.866 ; 0.690 / 0.866 | 0.588 / 0.765 ; 0.588 / 0.765 |
+| v6 C4 snapped, runs 1 ; 2 | 0.661 / 0.939 ; 0.669 / 0.939 | 0.601 / 0.818 ; 0.592 / 0.804 |
+| v6 C5 grasp anchors, runs 1 ; 2 | 0.596 / 0.931 ; 0.620 / 0.931 | 0.550 / 0.805 ; 0.555 / 0.791 |
+| v6 C6 anchors + snapped, runs 1 ; 2 | 0.694 / 0.939 ; 0.694 / 0.939 | 0.569 / 0.805 ; 0.561 / 0.785 |
+
+- At F1@0.5 v6's own subtasks (C1) lead TempSeg on every split: Galaxea
+  0.917 / 0.964 / 0.939 (tuning / held-out / all 75) against 0.835 / 0.883 /
+  0.857, DROID 0.778-0.844 / 0.805-0.843 / 0.816-0.824 against 0.747 / 0.754 /
+  0.752. Snapping and anchors (C4-C6) change F1@0.5 little; they move cuts,
+  not groups.
+- At F1@0.75 the order depends on the boundary steps: C1 is below TempSeg on
+  Galaxea, and C6 (Galaxea) and C4 (DROID) are at or above it.
+
 ## 7. Where we stand
 
 - **Best combination** (2026-11-05, all 75 episodes, 49 of them held out): the
