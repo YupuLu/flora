@@ -15,7 +15,11 @@ segments:
   with TempSeg's boundary placement, which is closer to the references than our phase cuts);
 * C5 (with verdicts): C1 with a cut within one phase of a confirmed grasp moved to the end of the
   grasp's phase (a confirmed grasp completes the pick-up; ``anchored``);
-* C6: C5 snapped like C4.
+* C6: C5 snapped like C4;
+* C7 (with transitions, v7): C1 with the model's transition phases (reach, lift, carry, retreat) re-attached
+  by the dataset setting ``--attach`` (e.g. ``retreat=next,lift=previous``): a transition phase at the
+  edge of a subtask moves to the neighbouring subtask on the set side (``reattach``);
+* C8: C7, then the grasp anchors of C5. Neither uses TempSeg.
 
     python kinseg/combine.py prompts --captions <caption run> --kinematic <run> --out <dir>
     python kinseg/combine.py ask --prompts <dir> --provider openlux-codex-gpt-1 --autolabel <checkout> --out <dir>
@@ -213,6 +217,53 @@ def anchored(ranges: List[Tuple[int, int, str]], phases: List[Dict[str, object]]
     return [(phases[a]["start_s"], phases[b - 1]["end_s"]) for a, b in zip(edges[:-1], edges[1:]) if b > a]
 
 
+TRANSITION_TYPES = ("reach", "lift", "carry", "retreat")
+
+
+def parse_attach(text: str) -> Dict[str, str]:
+    """``retreat=next,lift=previous`` -> {"retreat": "next", "lift": "previous"} (other types stay put)."""
+    out = {}
+    for part in filter(None, (t.strip() for t in text.split(","))):
+        kind, side = (x.strip() for x in part.split("="))
+        if kind not in TRANSITION_TYPES or side not in ("next", "previous"):
+            raise ValueError(f"bad --attach item {part!r}")
+        out[kind] = side
+    return out
+
+
+def transition_types(answer: dict, n: int) -> Dict[int, str]:
+    """Phase index -> transition type from the answer's ``transitions`` list."""
+    out = {}
+    for item in answer.get("transitions") or []:
+        try:
+            k, kind = int(item["phase"]), str(item["type"]).lower()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= k < n and kind in TRANSITION_TYPES:
+            out[k] = kind
+    return out
+
+
+def reattach(ranges: List[Tuple[int, int, str]], transitions: Dict[int, str],
+             attach: Dict[str, str]) -> List[Tuple[int, int, str]]:
+    """Move transition phases across subtask boundaries to the side ``attach`` sets for their type.
+
+    At each boundary, transition phases at the start of the later subtask whose type is set to
+    "previous" join the earlier subtask, and transition phases at the end of the earlier subtask whose
+    type is set to "next" join the later one; every subtask keeps at least one phase.
+    """
+    out = [list(r) for r in ranges]
+    for s in range(1, len(out)):
+        prev, cur = out[s - 1], out[s]
+        while cur[0] < cur[1] and attach.get(transitions.get(cur[0], "")) == "previous":
+            cur[0] += 1
+            prev[1] += 1
+        while prev[0] < prev[1] and attach.get(transitions.get(prev[1], "")) == "next":
+            prev[1] -= 1
+            cur[0] -= 1
+    return [tuple(r) for r in out]
+
+
 def confirmed_events(answer: dict, case: Dict[str, object], phases: List[Dict[str, object]]):
     """Gripper events the answer confirms: closes judged 'grasp' and opens judged 'release'."""
     from merge import gripper_events
@@ -308,6 +359,7 @@ def score(args) -> int:
     from merge import boundaries, gripper_events, scorer, snap, split_at_grasps
 
     score_family = scorer(Path(args.autolabel))
+    attach = parse_attach(args.attach)
     kin = load_kinematic(Path(args.kinematic))
     items = {p.stem: json.loads(p.read_text()) for p in sorted(Path(args.prompts).glob("*.json"))}
     answers = dict(a.split("=", 1) for a in args.answers)
@@ -362,6 +414,14 @@ def score(args) -> int:
                 row.setdefault("C5 C1, cuts anchored at confirmed grasps", []).append(case_of(c5, refs))
                 row.setdefault(f"C6 C5 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c6, refs))
             row.setdefault(f"C4 C1 snapped to TempSeg cuts ({SNAP_S:g} s)", []).append(case_of(c4, refs))
+            c7 = c8 = None
+            if answer is not None and "transitions" in answer and ranges:
+                moved = reattach(ranges, transition_types(answer, len(phases)), attach)
+                c7 = [(phases[a]["start_s"], phases[b]["end_s"]) for a, b, _ in moved]
+                c8 = anchored(moved, phases, confirmed)
+                tag = ",".join(f"{k}={v}" for k, v in sorted(attach.items())) or "none"
+                row.setdefault(f"C7 C1, transitions attached ({tag})", []).append(case_of(c7, refs))
+                row.setdefault("C8 C7 + grasp anchors", []).append(case_of(c8, refs))
             stats.append(dict(answered=answer is not None, repairs=len(repairs), confirmed=len(confirmed),
                               events=len(gripper_events(case)),
                               verdicts=[(v, at_reference_cut(e, refs)) for e, v in
@@ -376,6 +436,9 @@ def score(args) -> int:
                     C4=[dict(start_s=a, end_s=b, label=l) for (a, b), l in zip(c4, labels)],
                     **({} if c5 is None else dict(C5=[dict(start_s=a, end_s=b) for a, b in c5],
                                                   C6=[dict(start_s=a, end_s=b) for a, b in c6])),
+                    **({} if c7 is None else dict(C7=[dict(start_s=a, end_s=b) for a, b in c7],
+                                                  C8=[dict(start_s=a, end_s=b) for a, b in c8],
+                                                  transitions=(answer or {}).get("transitions"))),
                     confirmed=[dict(arm=e[0], kind=e[1], start_sec=e[2]) for e in confirmed],
                     gripper=(answer or {}).get("gripper"), repairs=repairs), indent=1) + "\n")
     lines = ["| Source | Family | Method | F1@0.75 | F1@0.5 | pred/ref | Answers / repaired / events confirmed |",
@@ -533,6 +596,8 @@ def main(argv=None) -> int:
     s.add_argument("--kinematic", required=True)
     s.add_argument("--tempseg", required=True)
     s.add_argument("--segments", help="also write each answer's segments here, per source and episode")
+    s.add_argument("--attach", default="", help="C7 setting, e.g. retreat=next,lift=previous (types: "
+                                               + ", ".join(TRANSITION_TYPES) + ")")
     s.add_argument("--out")
     e = sub.add_parser("examples", help="markdown: the log next to each model's subtasks, and the segments")
     e.add_argument("--prompts", required=True)

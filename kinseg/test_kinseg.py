@@ -329,6 +329,19 @@ def test_transition_regions_and_forgiving():
     assert forgive([(0.0, 5.5), (5.5, 8.0)], regions(case)) == [(0.0, 5.5), (5.5, 8.0)]  # outside: unchanged
 
 
+def test_reattach_transitions():
+    from combine import parse_attach, reattach
+
+    # pick up 0-2 (phase 2 a lift) | place 3-5 (phase 3 a retreat? no: carry) | pick up 6-8 (phase 6 a retreat)
+    ranges = [(0, 2, "pick"), (3, 5, "place"), (6, 8, "pick")]
+    kinds = {2: "lift", 3: "carry", 6: "retreat"}
+    assert reattach(ranges, kinds, {}) == ranges
+    assert reattach(ranges, kinds, parse_attach("lift=next")) == [(0, 1, "pick"), (2, 5, "place"), (6, 8, "pick")]
+    assert reattach(ranges, kinds, parse_attach("retreat=previous")) == [(0, 2, "pick"), (3, 6, "place"),
+                                                                        (7, 8, "pick")]
+    assert reattach([(0, 0, "a"), (1, 1, "b")], {0: "lift"}, {"lift": "next"}) == [(0, 0, "a"), (1, 1, "b")]
+
+
 def test_grid_ticks():
     from segment import grid_ticks
 
