@@ -70,6 +70,11 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
                     regions capped at 1 s:  v6 C1 0.727-0.743 / 0.592-0.594   against TempSeg 0.734 / 0.569
                     (whole touching phases: 0.776-0.792 / 0.642-0.645, too generous on DROID's long phases)
                     → most of v6's Galaxea gap at 0.75 is where free movements are attached
+             │
+             v7: v6 + transition phases marked by the model (reach, lift, carry, retreat), attached by a
+                 dataset setting in code (C7), no TempSeg (§5.8; 26 episodes, 11-06)
+                 lift=next, retreat=next: Galaxea 0.571 / 0.529, DROID 0.607 / 0.607
+                 (TempSeg 0.676 / 0.530; gripper split 0.681 / 0.587)
 ```
 
 | Name | What it is | Defined in | Output folder (`outputs/kinseg/`) |
@@ -80,9 +85,9 @@ kinematic phases + gripper events (autolabel)          video ──► Flora-Tem
 | A_none … B_robot_prev | Captioner input variants, text in the episode-instruction field | §5.3 | `caption_merge/v2/<name>` |
 | T1-T5 | Captioner runs with our prompt template, one item added per run | §5.6, `caption_prompt.py` | `caption_merge/v3/T<n>` (T4: all 75) |
 | operation join, motion absorbed | joining captions by leading verb; also absorbing motion-only captions | §5.1, `caption_merge.py` | |
-| v1-v6, v6-* | instructions for the combining model | §5.7, `prompts/combine/` | `combine/T4` (v1), `T4_v2` … `T4_v6-boundary` |
+| v1-v7, v6-* | instructions for the combining model | §5.7, §5.8, `prompts/combine/` | `combine/T4` (v1), `T4_v2` … `T4_v7` |
 | sol, luna, haiku | the combining models | §5.7 | `combine/*/answers/<model>` |
-| C1-C6 | post-processing of a combination answer | §5.7, `combine.py` | `combine/*/segments`, `score.md` |
+| C1-C8 | post-processing of a combination answer | D8, §5.7, §5.8, `combine.py` | `combine/*/segments`, `score*.md` |
 | gripper verdicts, confirmed events | the model's grasp / release / none per gripper event; a grasp or release judged so | §5.7 | |
 | heldout_v6, all75_v6 | v6 on the 49 held-out episodes, and all 75 pooled | §5.7 | `combine/heldout_v6`, `combine/all75_v6` |
 | transition region, forgiven | free movement next to a reference cut; scoring that accepts a cut anywhere in it | §5.7, `transition_eval.py` | `combine/all75_v6/transition_eval_*.md` |
@@ -216,6 +221,9 @@ video blocks.
     hand or a held object to the next action belongs to it (after the last
     action, to the last); captions may be wrong; kinematics support the
     captions; gripper verdicts.
+  - **v7:** v6 + "list every phase that is only a transition between
+    actions, with its type: reach, lift, carry, retreat"; the answer gets a
+    `transitions` list.
   - **v6 ablations:** v6-movement (without the movement rule), v6-grouping
     (without the grouping clause), v6-previous (moving away belongs to the
     action it follows), v6-noverdict (no verdicts), v6-boundary (verdict
@@ -248,6 +256,15 @@ placed. TempSeg cuts and the 1 s tolerance are as in D1.
   references (the model tends to end the pick-up one phase later). Releases
   are not used as anchors (it made results worse).
 - **C6, C5 snapped.** C5, then the snapping of C4.
+- **C7, transitions attached by setting** (v7 answers). A dataset setting
+  gives each transition type a side, e.g. `lift=next, retreat=next`. At every
+  boundary between two subtasks, transition phases at the start of the later
+  subtask whose type is set to "previous" move to the earlier subtask, and
+  transition phases at the end of the earlier subtask whose type is set to
+  "next" move to the later one; every subtask keeps at least one phase. It
+  makes the attachment convention one explicit switch instead of a
+  prompt wording, and uses no TempSeg output.
+- **C8, C7 + grasp anchors.** C7, then the anchoring of C5.
 
 Worked example (one arm; reference: pick up 0-2.4 s, place 2.4-5.2 s;
 TempSeg: 0-2.5, 2.5-6.0):
@@ -1285,6 +1302,56 @@ moves a model cut lying within one phase of a confirmed grasp to the end of
 the grasp's phase. In practice sol confirms almost every event (Galaxea 102 of
 102; DROID 142 of 156), so the verdicts matter only where they reject one: on
 held-out DROID that makes C3 the best DROID result (0.605 against 0.579).
+
+### 5.8 Transitions marked by the model, attached by setting (v7, 2026-11-06)
+
+To keep the pipeline independent of TempSeg and of one dataset's
+convention, v7 (`prompts/combine/v7.txt`) is v6 plus one request: list every
+phase that is only a transition between actions, with its type (reach, lift,
+carry, retreat). The model still puts those phases in subtasks as in v6. C7
+then moves a transition phase that sits at the edge of a subtask to the
+neighbouring subtask, on the side a dataset setting gives for its type
+(`score --attach lift=next,retreat=next`); C8 adds the grasp anchors of C5.
+No TempSeg output is used. Sol, 26 tuning episodes, two runs:
+
+| F1@0.75 (F1@0.5) | Galaxea run 1 / 2 | DROID run 1 / 2 |
+|---|---:|---:|
+| TempSeg | 0.676 (0.835) | 0.530 (0.747) |
+| TempSeg + gripper split | 0.681 (0.851) | 0.587 (0.804) |
+| v6 C1 (for comparison) | 0.511 / 0.526 | 0.578 / 0.622 |
+| v6 C5, grasp anchors | 0.571 / 0.571 | 0.578 / 0.622 |
+| v7 C1, model's subtasks | 0.511 / 0.456 (0.902 / 0.868) | 0.562 / 0.562 (0.787 / 0.764) |
+| v7 C7, lift=next, retreat=next | **0.571 / 0.529** (0.902 / 0.868) | **0.607 / 0.607** (0.787 / 0.742) |
+| v7 C7, lift=previous, retreat=next | 0.511 / 0.485 | 0.562 / 0.539 |
+| v7 C7, lift=next, retreat=previous | 0.511 / 0.500 | 0.562 / 0.562 |
+| v7 C7, lift=previous, retreat=previous | 0.406 / 0.412 | 0.517 / 0.517 |
+| v7 C8, lift=next, retreat=next + grasp anchors | 0.556 / 0.515 | 0.584 / 0.584 |
+
+- **One setting helps both families: lift and retreat go to the next
+  action** (+0.06 / +0.07 on Galaxea, +0.045 on DROID over v7's own subtasks).
+  It is what v6's movement line asks for; the model labels the lift as a
+  transition but keeps it in the pick-up, and C7 enforces the rule in code.
+  Every other setting loses, most when retreats go back to the previous action
+  (Galaxea 0.41).
+- **The setting predicted from the references was wrong for DROID.** DROID's
+  reference pick-ups end 1.7 s after the close command (§5.7), which
+  suggested lift=previous; it scored 0.562 / 0.539 against 0.607 / 0.607 for
+  lift=next. DROID's command-based gripper times are a poor guide; a setting
+  should be chosen by scoring a few annotated episodes, not by that
+  measurement alone.
+- **The gain is convention.** With transitions forgiven (regions capped at
+  1 s), C7 equals C1 on Galaxea (0.677 / 0.632 against 0.677 / 0.662) and is
+  close on DROID (0.629 / 0.629 against 0.607 / 0.584).
+- **Without TempSeg, Galaxea stays about 0.1 below it** (best 0.571 against
+  0.676) while DROID is above it (0.607 against 0.530, and above the gripper
+  split's 0.587). What is left on Galaxea is where our phase cuts lie (median
+  0.46 s from the reference against TempSeg's 0.27 s), not which side a phase
+  goes to.
+- Asking for transitions costs v7's own grouping a little (C1 Galaxea 0.456
+  in run 2), within the run-to-run noise of about 0.05.
+
+Files: `outputs/kinseg/combine/T4_v7/` (answers, `score_<setting>.md`,
+`transition_<setting>.md`).
 
 ## 6. Results (all 75 episodes unless noted)
 
